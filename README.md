@@ -27,4 +27,4 @@ bun run pack:check
 bun run changeset
 ```
 
-选择受影响的 package 与对应的 SemVer 等级，并将生成的 `.changeset/*.md` 文件与实现一起提交。版本 PR 合并后，GitHub Actions 会发布尚未存在的版本。
+选择受影响的 package 与对应的 SemVer 等级，并将生成的 `.changeset/*.md` 文件与实现一起提交。版本 PR 合并后，GitHub Actions 会发布尚未存在的版本。完整发布流程见 [Release process](docs/releasing.md)。

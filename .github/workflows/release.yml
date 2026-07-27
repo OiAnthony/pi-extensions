@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   release:
-    if: vars.NPM_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,3 +36,5 @@ jobs:
       - uses: changesets/action@v2
         with:
           publish-script: bun run release
+          create-github-releases: true
+          push-git-tags: true
