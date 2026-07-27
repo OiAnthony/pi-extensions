@@ -33,8 +33,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
       - run: bun run pack:check
-      - uses: changesets/action@v2
+      - uses: changesets/action@v1
         with:
-          publish-script: bun run release
-          create-github-releases: true
-          push-git-tags: true
+          publish: bun run release
+          createGithubReleases: true
