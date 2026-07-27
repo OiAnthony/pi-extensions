@@ -5,13 +5,13 @@ Folder-based persistent command history for [pi](https://github.com/badlogic/pi-
 ## Install
 
 ```bash
-pi install npm:pi-command-history
+pi install npm:@oipsanthony/pi-command-history
 ```
 
 Or try without installing:
 
 ```bash
-pi -e npm:pi-command-history
+pi -e npm:@oipsanthony/pi-command-history
 ```
 
 ## Usage
