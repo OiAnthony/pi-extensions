@@ -15,3 +15,7 @@
 ## Documentation
 
 - `README.md` is the Simplified Chinese root README and `README.en.md` is its English equivalent. Update both when changing their shared content.
+
+## 文档语言
+
+- 仓库文档默认使用简体中文。仅在用户明确要求或目标读者包含非中文用户时提供双语版本。

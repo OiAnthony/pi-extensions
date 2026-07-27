@@ -1,18 +1,18 @@
-# Development Guide
+# 开发指南
 
-This guide covers how to add and maintain an independently published Pi package in this repository. Read [Release Process](releasing.md) for the release automation and security model.
+本指南说明如何在仓库中新增和维护可独立发布的 Pi package。发布自动化与安全模型见[发布流程](releasing.md)。
 
-## Workspace Rules
+## Workspace 约定
 
-- Keep all publishable packages under `packages/<package-name>/`.
-- Install dependencies only from the repository root with `bun install`.
-- Keep the root `bun.lock` as the workspace lockfile.
-- Make each package self-contained: its manifest, README, tests, shipped files, and license must describe the package without relying on repository-only documentation.
-- Use the npm scope `@oipsanthony` for public packages.
+- 所有可发布 package 都放在 `packages/<package-name>/`。
+- 只在仓库根目录执行 `bun install` 安装依赖。
+- 根目录的 `bun.lock` 是 workspace 唯一的 lockfile。
+- 每个 package 必须自包含。其 manifest、README、测试、发布文件和许可证应足以独立说明该 package，不依赖仓库专用文档。
+- 公开 package 使用 npm scope `@oipsanthony`。
 
-## Create a Package
+## 新建 Package
 
-Start with this layout for an extension package:
+Extension package 的起始目录结构：
 
 ```text
 packages/pi-example/
@@ -26,7 +26,7 @@ packages/pi-example/
   tsconfig.json
 ```
 
-Use a package manifest that declares only the files and runtime peers required by the package:
+`package.json` 只声明 package 实际需要的发布文件与运行时 peer：
 
 ```json
 {
@@ -68,11 +68,11 @@ Use a package manifest that declares only the files and runtime peers required b
 }
 ```
 
-Add peer dependencies only for Pi packages imported by the package. For example, add `@mariozechner/pi-tui` only when the extension imports its public API. Keep `files` narrow and inspect the tarball. When a shipped resource directory also contains tests, exclude them with `.npmignore`, for example `extensions/**/*.test.ts`.
+只为 package 实际 import 的 Pi package 添加 peer dependency。例如，只有 extension import 了 `@mariozechner/pi-tui` 的公开 API 时，才添加它。保持 `files` 精确，并检查 tarball 内容。资源目录同时包含测试时，用 `.npmignore` 排除测试，例如 `extensions/**/*.test.ts`。
 
-The `pi` field is the package interface used by Pi. Change it to declare the resources the package ships, such as extensions, skills, prompts, or themes. Keep resource paths relative to the package directory.
+`pi` 字段是 Pi 识别 package 资源的接口。根据 package 实际提供的资源声明 extensions、skills、prompts 或 themes，并保持资源路径相对 package 目录。
 
-Use this `tsconfig.json` for TypeScript resources unless the resource has a documented exception:
+除非资源有明确例外，TypeScript 资源使用以下 `tsconfig.json`：
 
 ```json
 {
@@ -96,9 +96,9 @@ Use this `tsconfig.json` for TypeScript resources unless the resource has a docu
 }
 ```
 
-## Local Development
+## 本地开发
 
-Run the repository-wide checks before opening a pull request:
+提交 PR 前运行仓库级检查：
 
 ```bash
 bun install
@@ -107,56 +107,56 @@ bun run test
 bun run pack:check
 ```
 
-Use `bun run pack:check` as the final package boundary check. It runs `npm pack --dry-run` for every public workspace package and prints the exact tarball contents.
+`bun run pack:check` 是最终 package 边界检查。它会对所有公开 workspace package 执行 `npm pack --dry-run`，并输出实际 tarball 内容。
 
-For a focused loop, run the package scripts directly:
+需要快速迭代时，直接运行 package script：
 
 ```bash
 bun run --filter @oipsanthony/pi-example typecheck
 bun run --filter @oipsanthony/pi-example test
 ```
 
-Install the package in Pi from npm only after it has been published. During local development, test the resource from its workspace path or through the package-specific test suite.
+只有发布到 npm 后，才从 npm 在 Pi 中安装 package。开发阶段应从 workspace 路径测试资源，或通过 package 的测试套件验证。
 
-## Prepare a Change
+## 准备改动
 
-Create a branch and implement the package change with its tests and README update. Any user-visible package change also needs a Changeset:
+创建分支，实现改动、测试和 README 更新。任何用户可见的 package 改动都需要 Changeset：
 
 ```bash
 bun run changeset
 ```
 
-Select every package affected by the change and choose the SemVer bump:
+选择每个受影响 package，并按以下规则选择 SemVer：
 
-- `patch`: compatible fix or documentation correction that changes the package release
-- `minor`: compatible feature or configuration addition
-- `major`: incompatible behavior, removed configuration, or changed public contract
+- `patch`：兼容修复，或会改变发布产物的文档修正。
+- `minor`：兼容的新功能或配置项。
+- `major`：不兼容的行为、删除的配置或变更后的公开契约。
 
-Commit the generated `.changeset/*.md` file with the code. Do not edit package versions manually. Do not run `npm version`, `npm publish`, or create tags for routine releases.
+将生成的 `.changeset/*.md` 与代码一起提交。不要手动修改 package 版本，不要在常规发布中运行 `npm version`、`npm publish` 或创建 tag。
 
-Open a pull request. The `verify` check must pass before it can be squash merged into `main`.
+创建 PR。只有 `verify` check 通过后，PR 才能 squash merge 到 `main`。
 
-## What Happens After Merge
+## 合并后的行为
 
-A merged package change with a Changeset causes GitHub Actions to create or update a `Version Packages` pull request. Review its versions and changelog entries. When that PR is squash merged, GitHub Actions publishes each new package version through npm OIDC, then creates package tags and GitHub Releases.
+包含 Changeset 的 package 改动合并后，GitHub Actions 会创建或更新 `Version Packages` PR。审核其中的版本和 changelog。该 PR squash merge 后，GitHub Actions 会通过 npm OIDC 发布新版本，并创建 package tag 和 GitHub Release。
 
-A normal feature pull request never publishes npm directly. The version pull request is the review gate for the release.
+普通功能 PR 不会直接发布 npm。版本 PR 才是发布审核门禁。
 
-## Bootstrap a New Public Package
+## 新公开 Package 的 Bootstrap
 
-A new npm package needs one manual bootstrap because npm requires the package to exist before a Trusted Publisher can be configured.
+npm 要求 package 已存在后才能配置 Trusted Publisher，因此新 package 需要一次手工 bootstrap。
 
-After the initial package pull request is approved but before it is merged:
+初始 package PR 已通过审核、尚未合并时：
 
-1. Run the repository checks and inspect the tarball.
-2. Publish the initial version from the package branch with an authenticated npm maintainer account:
+1. 运行仓库检查并检查 tarball。
+2. 使用已认证的 npm maintainer 账号，从 package 分支发布初始版本：
 
    ```bash
    npm publish --workspace=@oipsanthony/pi-example --access public
    ```
 
-3. Complete npm two-factor authentication.
-4. Bind the package to the release workflow:
+3. 完成 npm 2FA。
+4. 将 package 绑定到 release workflow：
 
    ```bash
    npm trust github @oipsanthony/pi-example \
@@ -165,19 +165,19 @@ After the initial package pull request is approved but before it is merged:
      --allow-publish
    ```
 
-5. In the npm package settings, select `Require 2FA and disallow tokens`.
-6. Merge the initial package pull request.
+5. 在 npm package 设置中选择 `Require 2FA and disallow tokens`。
+6. 合并初始 package PR。
 
-The merge is safe after bootstrap because npm already contains the initial version. Every later version follows the standard Changeset and Version Packages pull request flow.
+bootstrap 后合并是安全的，因为 npm 已包含初始版本。后续版本均遵循 Changeset 和 Version Packages PR 流程。
 
-## Release Recovery
+## 发布故障恢复
 
-Do not retry a release by manually changing a version or creating a tag. First inspect the failed GitHub Actions run, confirm whether npm accepted the version, and read [Release Process](releasing.md#recovery).
+不要通过手动修改版本或创建 tag 重试发布。先检查失败的 GitHub Actions run，确认 npm 是否已接受该版本，并阅读[发布流程的故障恢复部分](releasing.md#故障恢复)。
 
-A manual release run is available for recovery:
+需要恢复时可手动运行 release workflow：
 
 ```bash
 gh workflow run Release --repo OiAnthony/pi-packages
 ```
 
-It is state-based and can create a version pull request or publish a pending version. Use it only after understanding the current npm and Changeset state.
+该 workflow 由当前状态决定行为，可能创建版本 PR 或发布待处理版本。只有在明确 npm 和 Changeset 当前状态后才运行。
