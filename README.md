@@ -17,7 +17,7 @@ bun run typecheck
 bun run pack:check
 ```
 
-每个 package 均通过其 `package.json` 中的 `pi` 字段声明 Extension、Skill、Prompt 或 Theme 资源。
+每个 package 均通过其 `package.json` 中的 `pi` 字段声明 Extension、Skill、Prompt 或 Theme 资源。新增 package 与本地开发流程见 [Development guide](docs/development-guide.md)。
 
 ## 发布
 
