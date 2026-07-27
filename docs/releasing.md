@@ -1,72 +1,72 @@
-# Release Process
+# 发布流程
 
-This repository publishes public npm packages from a Bun workspace. Packages use independent semantic versions. A release is driven by a Changeset and a reviewed version pull request, not by a manually created Git tag.
+本仓库通过 Bun workspace 发布公开 npm package。各 package 独立维护语义化版本。发布由 Changeset 和经过审核的版本 PR 驱动，而不是手动创建 Git tag。
 
-## Overview
+## 总览
 
 ```text
-Feature pull request with a Changeset
-  -> merge to main
-  -> Version Packages pull request
-  -> merge the version pull request
-  -> npm publish through GitHub Actions OIDC
-  -> Git tag and GitHub Release
+包含 Changeset 的功能 PR
+  -> 合并到 main
+  -> 自动创建 Version Packages PR
+  -> 合并版本 PR
+  -> GitHub Actions 通过 npm OIDC 发布
+  -> 创建 Git tag 和 GitHub Release
 ```
 
-The `package.json` version is the source of truth for a published package. Git tags and GitHub Releases are created after npm accepts the package version, so they are release records rather than release triggers.
+`package.json` 中的版本是 npm 发布的事实来源。npm 接受版本后才会创建 Git tag 和 GitHub Release，因此它们是发布记录，不是发布触发条件。
 
-## Contributor Flow
+## 贡献者流程
 
-For any change that should publish a package, create a Changeset in the same pull request:
+任何会影响 package 发布的改动，都要在同一个 PR 中创建 Changeset：
 
 ```bash
 bun run changeset
 ```
 
-Select every affected package and choose its SemVer bump:
+选择每个受影响 package，并按 SemVer 选择升级等级：
 
-- `patch` for compatible bug fixes
-- `minor` for compatible features
-- `major` for breaking changes
+- `patch`：兼容的修复。
+- `minor`：兼容的新功能。
+- `major`：不兼容的行为或 API 变更。
 
-Commit the generated `.changeset/*.md` file with the implementation. Do not edit a package version, run `npm version`, publish to npm, or create a release tag in a feature pull request.
+将生成的 `.changeset/*.md` 与实现一起提交。功能 PR 中不要直接修改 package 版本、执行 `npm version`、发布 npm，或创建 release tag。
 
-The `CI` workflow runs on every pull request and on every push to `main`. It installs the locked dependencies, type-checks every package, runs every package test script, and verifies the npm tarball with `npm pack --dry-run`.
+`CI` workflow 会在每个 PR 和每次 push 到 `main` 时运行。它会安装锁定依赖、检查所有 package 的类型、运行测试，并通过 `npm pack --dry-run` 验证 npm tarball。
 
-## Release Flow
+## 发布流程
 
-When a pull request containing a Changeset is merged into `main`, the `Release` workflow creates or updates a `Version Packages` pull request. That pull request applies the selected versions and updates package changelogs.
+包含 Changeset 的 PR 合并到 `main` 后，`Release` workflow 会创建或更新一个 `Version Packages` PR。该 PR 会应用所选版本并更新 package changelog。
 
-Review the generated versions and changelog entries, then squash merge the `Version Packages` pull request. Its merge triggers the release workflow again. With no remaining Changesets, it publishes versions that do not already exist in npm.
+审核生成的版本与 changelog 后，squash merge `Version Packages` PR。它合并后会再次触发 release workflow。此时没有待处理 Changeset，workflow 会发布 npm 中尚不存在的版本。
 
-After a successful publish, Changesets creates the package version tags and GitHub Releases. A push to `main` with no pending Changesets and no unpublished versions is a no-op. `workflow_dispatch` runs the same state-based workflow and can create a version pull request or publish a pending version. It is not a dry run.
+发布成功后，Changesets 会创建 package 版本 tag 和 GitHub Release。没有待处理 Changeset 或未发布版本的 `main` push 会无操作。`workflow_dispatch` 也执行同一套状态驱动流程，可能创建版本 PR 或发布待处理版本，不是 dry run。
 
-## Security
+## 安全
 
-Each public npm package has its own npm Trusted Publisher configuration for `.github/workflows/release.yml` in `OiAnthony/pi-packages`. The workflow runs on a GitHub-hosted runner and has `id-token: write`, so npm exchanges its GitHub Actions OIDC token for a short-lived publishing credential.
+每个公开 npm package 都要为 `OiAnthony/pi-packages` 的 `.github/workflows/release.yml` 配置 npm Trusted Publisher。workflow 运行在 GitHub-hosted runner，并拥有 `id-token: write` 权限，因此 npm 会将 GitHub Actions 的 OIDC token 交换为短期发布凭据。
 
-Do not add `NPM_TOKEN` to GitHub secrets. On npm, set each package to require two-factor authentication and disallow token publishing after its Trusted Publisher is configured. This keeps routine releases bound to the reviewed GitHub workflow.
+不要向 GitHub secrets 添加 `NPM_TOKEN`。完成 Trusted Publisher 配置后，在 npm 中为每个 package 启用 `Require 2FA and disallow tokens`。这样常规发布只能来自经过审核的 GitHub workflow。
 
-The `main` branch is protected by a GitHub ruleset. Changes must arrive through a pull request, use squash merge, pass the `verify` check, resolve review conversations, and cannot force-push or delete the branch.
+`main` 分支受 GitHub ruleset 保护。所有改动必须经 PR、使用 squash merge、通过 `verify` check、解决 review conversation，并且不能 force push 或删除分支。
 
-## Bootstrapping a New Package
+## 新 package 的首次发布
 
-npm requires a package to exist before it can receive a Trusted Publisher configuration. For a newly added public package:
+npm 要求 package 已经存在，才能配置 Trusted Publisher。因此新增公开 package 时，需要一次手工 bootstrap：
 
-1. Prepare and review the package pull request, including its scoped name, public `publishConfig`, repository metadata, tests, and package files.
-2. Before merging that pull request, publish its initial version from an authenticated maintainer terminal and complete npm two-factor authentication.
-3. Configure the package's Trusted Publisher for `OiAnthony/pi-packages` and `release.yml` with the `npm trust github` command.
-4. Enable the npm package setting that requires two-factor authentication and disallows token publishing.
-5. Merge the initial package pull request. All later releases use the normal Changeset flow.
+1. 准备并审核 package PR，包括 scoped name、公开 `publishConfig`、repository metadata、测试和发布文件。
+2. 在该 PR 合并前，使用已认证的 npm maintainer 终端发布初始版本，并完成 npm 2FA。
+3. 使用 `npm trust github` 将该 package 的发布权限绑定到 `OiAnthony/pi-packages` 的 `release.yml`。
+4. 在 npm package 设置中启用 `Require 2FA and disallow tokens`。
+5. 合并初始 package PR。之后所有版本都走常规 Changeset 流程。
 
-A package must receive this bootstrap once. Every later version is published only by the release workflow.
+每个 package 只需要 bootstrap 一次。后续版本只能由 release workflow 发布。
 
-## Recovery
+## 故障恢复
 
-Use a manual release run only to recover a failed or interrupted release:
+只在发布失败或中断时手动运行 release workflow：
 
 ```bash
 gh workflow run Release --repo OiAnthony/pi-packages
 ```
 
-Check the package version on npm and the corresponding GitHub Release before retrying. npm versions are immutable, so a failed publish must be diagnosed before creating another version.
+重试前先检查 npm 中的 package 版本和对应 GitHub Release。npm 版本不可覆盖，必须先定位失败原因，再决定是否创建新版本。
