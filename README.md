@@ -1,12 +1,14 @@
 # Pi Packages
 
-[English](README.en.md)
-
 用于开发和发布 Pi package 的 Bun workspace monorepo。
 
 ## 目录结构
 
 - `packages/`：可独立安装的 Pi package。
+
+## 可安装 Package
+
+- [`@oipsanthony/pi-prompt-translator`](packages/pi-prompt-translator/README.md)：在提交前按需将 Pi editor 中的中文 Prompt 翻译为英文。
 
 ## 开发
 
