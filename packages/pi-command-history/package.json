@@ -13,6 +13,16 @@
   },
   "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-command-history#readme",
   "author": "Ross Z",
+  "contributors": [
+    {
+      "name": "Ross Z",
+      "url": "https://github.com/ross-jill-ws"
+    },
+    {
+      "name": "Anthony",
+      "url": "https://github.com/OiAnthony"
+    }
+  ],
   "license": "MIT",
   "keywords": [
     "pi-package",
