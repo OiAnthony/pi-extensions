@@ -44,6 +44,9 @@ packages/pi-example/
   },
   "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-example#readme",
   "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
   "files": [
     "extensions",
     "LICENSE",
@@ -71,6 +74,8 @@ packages/pi-example/
 只为 package 实际 import 的 Pi package 添加 peer dependency。例如，只有 extension import 了 `@mariozechner/pi-tui` 的公开 API 时，才添加它。保持 `files` 精确，并检查 tarball 内容。资源目录同时包含测试时，用 `.npmignore` 排除测试，例如 `extensions/**/*.test.ts`。
 
 `pi` 字段是 Pi 识别 package 资源的接口。根据 package 实际提供的资源声明 extensions、skills、prompts 或 themes，并保持资源路径相对 package 目录。
+
+公开发布的 Pi package 的 `keywords` 必须包含 `"pi-package"`。Pi package gallery 仅展示带此 keyword 的 package，用户也可通过 npm 的 `keywords:pi-package` 查询发现它。该 keyword 不影响 `pi install` 或资源加载；后者仍由 `pi` 字段或约定资源目录决定。
 
 除非资源有明确例外，TypeScript 资源使用以下 `tsconfig.json`：
 

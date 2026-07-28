@@ -12,6 +12,12 @@ for (const entry of packageEntries) {
   const manifest = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
   if (manifest.private) continue;
 
+  if (!Array.isArray(manifest.keywords) || !manifest.keywords.includes("pi-package")) {
+    console.error(`${manifest.name} must include "pi-package" in package.json keywords.`);
+    failed = true;
+    continue;
+  }
+
   console.log(`Packing ${manifest.name}`);
   const result = Bun.spawnSync({
     cmd: ["npm", "pack", "--dry-run"],
