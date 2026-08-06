@@ -9,6 +9,8 @@
 ## 可安装 Package
 
 - [`@oipsanthony/pi-prompt-translator`](packages/pi-prompt-translator/README.md)：在提交前按需将 Pi editor 中的中文 Prompt 翻译为英文。
+- [`@oipsanthony/pi-session-title`](packages/pi-session-title/README.md)：自动生成并同步 Pi session、terminal 和 Herdr pane 标题。
+- [`@oipsanthony/pi-codex-compaction`](packages/pi-codex-compaction/README.md)：为受支持的 Provider 提供身份绑定的 Codex Remote Compaction V2。
 
 ## 开发
 

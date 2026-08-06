@@ -1,0 +1,50 @@
+{
+  "name": "@oipsanthony/pi-session-title",
+  "version": "0.1.0",
+  "description": "Generate and synchronize concise Pi session titles after completed conversations.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OiAnthony/pi-packages.git",
+    "directory": "packages/pi-session-title"
+  },
+  "bugs": {
+    "url": "https://github.com/OiAnthony/pi-packages/issues"
+  },
+  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-session-title#readme",
+  "author": "Anthony",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "session-title",
+    "session-name",
+    "terminal-title",
+    "herdr"
+  ],
+  "files": [
+    "extensions/core.ts",
+    "extensions/herdr.ts",
+    "extensions/index.ts",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test extensions",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14"
+  }
+}
