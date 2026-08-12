@@ -1,3 +1,8 @@
+/**
+ * Derived from monotykamary/pi-tps, originally from badlogic/pi-mono.
+ * See ../NOTICE and ../LICENSE for attribution and license terms.
+ * SPDX-License-Identifier: MIT
+ */
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -81,6 +86,11 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   pi.registerMessageRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (message, _options, theme) => {
     if (!isPromptDisplayData(message.details)) return undefined;
     return new Text(theme.fg("muted", message.details.line), 1, 0);
+  });
+
+  pi.registerEntryRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (entry, _options, theme) => {
+    if (!isPromptDisplayData(entry.data)) return undefined;
+    return new Text(theme.fg("muted", entry.data.line), 1, 0);
   });
 
   const restore = (ctx: ExtensionContext): void => {
@@ -230,14 +240,9 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
     prompts.push(prompt);
     sessionProcessingMs += prompt.durationMs;
     active = undefined;
-    pi.sendMessage({
-      customType: PROMPT_DISPLAY_MESSAGE_TYPE,
-      content: "",
-      display: true,
-      details: {
-        version: 1,
-        line: promptStatus(prompt, sessionProcessingMs),
-      },
+    pi.appendEntry(PROMPT_DISPLAY_MESSAGE_TYPE, {
+      version: 1,
+      line: promptStatus(prompt, sessionProcessingMs),
     });
   };
 

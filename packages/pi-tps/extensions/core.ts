@@ -1,3 +1,8 @@
+/**
+ * Derived from monotykamary/pi-tps, originally from badlogic/pi-mono.
+ * See ../NOTICE and ../LICENSE for attribution and license terms.
+ * SPDX-License-Identifier: MIT
+ */
 import type { StopReason, Usage } from "@earendil-works/pi-ai";
 
 interface SessionManagerView {
@@ -302,7 +307,7 @@ export function formatDuration(durationMs: number | null): string {
   if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(1)}s`;
   const minutes = Math.floor(durationMs / 60_000);
   const seconds = Math.round((durationMs % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+  return `${minutes}m${seconds}s`;
 }
 
 export function formatTokens(tokens: number): string {
@@ -323,7 +328,10 @@ export function promptStatus(prompt: PromptMetrics, sessionProcessingMs = prompt
     `out ${formatTokens(prompt.usage.output)}`,
   ];
   if (prompt.stallMs > 0) parts.push(`stall ${formatDuration(prompt.stallMs)}×${prompt.stallCount}`);
-  parts.push(`${formatDuration(prompt.durationMs)}/${formatDuration(sessionProcessingMs)}`);
+  const duration = formatDuration(prompt.durationMs);
+  parts.push(sessionProcessingMs === prompt.durationMs
+    ? duration
+    : `${duration}/${formatDuration(sessionProcessingMs)}`);
   return parts.join(" · ");
 }
 

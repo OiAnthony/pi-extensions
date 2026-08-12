@@ -23,6 +23,8 @@
     "metrics"
   ],
   "files": [
+    "LICENSE",
+    "NOTICE",
     "extensions/core.ts",
     "extensions/index.ts",
     "package.json"

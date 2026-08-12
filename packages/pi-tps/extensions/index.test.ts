@@ -9,6 +9,7 @@ import register, {
   aggregatePrompt,
   aggregateSession,
   emptyUsage,
+  formatDuration,
   formatTokens,
   rate,
   rateAfterStall,
@@ -41,6 +42,7 @@ interface Harness {
   handlers: Map<string, Handler>;
   commands: Map<string, CommandHandler>;
   messageRendererTypes: string[];
+  entryRendererTypes: string[];
   sentMessages: SentMessage[];
   entries: Array<{ customType: string; data: unknown }>;
   notifications: string[];
@@ -124,6 +126,7 @@ function createHarness(): Harness {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, CommandHandler>();
   const messageRendererTypes: string[] = [];
+  const entryRendererTypes: string[] = [];
   const sentMessages: SentMessage[] = [];
   const entries: Array<{ customType: string; data: unknown }> = [];
   const notifications: string[] = [];
@@ -148,6 +151,9 @@ function createHarness(): Harness {
     },
     registerMessageRenderer(customType: string) {
       messageRendererTypes.push(customType);
+    },
+    registerEntryRenderer(customType: string) {
+      entryRendererTypes.push(customType);
     },
     sendMessage(message: SentMessage) {
       sentMessages.push(message);
@@ -179,6 +185,7 @@ function createHarness(): Harness {
     handlers,
     commands,
     messageRendererTypes,
+    entryRendererTypes,
     sentMessages,
     entries,
     notifications,
@@ -243,6 +250,10 @@ describe("metric aggregation", () => {
     assert.equal(rate(100, 0), null);
   });
 
+  test("formats minute durations without spaces", () => {
+    assert.equal(formatDuration(73_000), "1m13s");
+  });
+
   test("formats thousands like the original pi-tps line", () => {
     assert.equal(formatTokens(18_500), "18.5K");
   });
@@ -290,9 +301,10 @@ describe("extension lifecycle", () => {
     harness.advance(395);
     await emit(harness, "agent_settled", {});
 
-    assert.equal(harness.entries.length, 2);
+    assert.equal(harness.entries.length, 3);
     assert.equal(harness.entries[0]!.customType, REQUEST_ENTRY_TYPE);
     assert.equal(harness.entries[1]!.customType, PROMPT_ENTRY_TYPE);
+    assert.equal(harness.entries[2]!.customType, PROMPT_DISPLAY_MESSAGE_TYPE);
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
     assert.equal(recordedRequest.ttftMs, 500);
@@ -304,15 +316,13 @@ describe("extension lifecycle", () => {
     assert.equal(recordedPrompt.effectiveTps, 50);
     assert.equal(harness.notifications.length, 0);
     assert.deepEqual(harness.messageRendererTypes, [PROMPT_DISPLAY_MESSAGE_TYPE]);
-    assert.equal(harness.sentMessages.length, 1);
-    assert.equal(harness.sentMessages[0]?.customType, PROMPT_DISPLAY_MESSAGE_TYPE);
-    assert.equal(harness.sentMessages[0]?.content, "");
-    assert.equal(harness.sentMessages[0]?.display, true);
+    assert.deepEqual(harness.entryRendererTypes, [PROMPT_DISPLAY_MESSAGE_TYPE]);
+    assert.equal(harness.sentMessages.length, 0);
     assert.equal(harness.widgets.length, 0);
-    const displayDetails = harness.sentMessages[0]?.details as { line?: string } | undefined;
+    const displayData = harness.entries[2]!.data as { line?: string };
     assert.match(
-      displayDetails?.line ?? "",
-      /^TPS 100\.0 tok\/s · TTFT 500ms · in 100 · out 100 · 2\.0s\/2\.0s$/,
+      displayData.line ?? "",
+      /^TPS 100\.0 tok\/s · TTFT 500ms · in 100 · out 100 · 2\.0s$/,
     );
   });
 
@@ -324,8 +334,8 @@ describe("extension lifecycle", () => {
     await emit(harness, "agent_end", { messages: [] });
     await emit(harness, "agent_settled", {});
 
-    assert.equal(harness.entries.length, 2);
-    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.entries.length, 3);
+    assert.equal(harness.sentMessages.length, 0);
     assert.equal((harness.entries[1]!.data as PromptMetrics).durationMs, 800);
   });
 
@@ -363,9 +373,9 @@ describe("extension lifecycle", () => {
     assert.equal(recordedRequest.outputTps, 250); // 100 tok / 0.4s net of stall
     const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
     assert.equal(recordedPrompt.stallMs, 600);
-    const line = (harness.sentMessages[0]?.details as { line?: string } | undefined)?.line ?? "";
+    const line = (harness.entries[2]!.data as { line?: string }).line ?? "";
     assert.match(line, /^TPS 250\.0 tok\/s/);
-    assert.match(line, /· stall 600ms×1 · 1\.5s\/1\.5s$/);
+    assert.match(line, /· stall 600ms×1 · 1\.5s$/);
   });
 
   test("merges consecutive stalled updates into one stall event and discounts dominance", async () => {
@@ -397,7 +407,7 @@ describe("extension lifecycle", () => {
     // generationMs = 1600 (first delta → message end); stall 1400 > 85% of 1600
     // → dominated branch, half discounted: 100 tok / (1600 - 1400/2)ms
     assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.9) < 0.01);
-    const line = (harness.sentMessages[0]?.details as { line?: string } | undefined)?.line ?? "";
+    const line = (harness.entries[2]!.data as { line?: string }).line ?? "";
     assert.match(line, /· stall 1\.4s×1 /);
   });
 
@@ -416,8 +426,8 @@ describe("extension lifecycle", () => {
     assert.equal(recordedPrompt.usage.output, 200);
     assert.equal(recordedPrompt.activeTps, 50);
     assert.match(
-      (harness.sentMessages.at(-1)?.details as { line?: string } | undefined)?.line ?? "",
-      /^TPS 50\.0 tok\/s · TTFT 200ms · in 200 · out 200 · 5\.0s\/5\.0s$/,
+      (harness.entries.find((entry) => entry.customType === PROMPT_DISPLAY_MESSAGE_TYPE)?.data as { line?: string } | undefined)?.line ?? "",
+      /^TPS 50\.0 tok\/s · TTFT 200ms · in 200 · out 200 · 5\.0s$/,
     );
   });
 
@@ -459,7 +469,7 @@ describe("extension lifecycle", () => {
     assert.equal(lines.length, 1);
     assert.match(lines[0] ?? "", /^TPS 100\.0 tok\/s · TTFT 500ms/);
     assert.match(lines[0] ?? "", /· in 100 · out 100/);
-    assert.match(lines[0] ?? "", /· 2\.0s\/2\.0s$/);
+    assert.match(lines[0] ?? "", /· 2\.0s$/);
     assert.doesNotMatch(lines.join(""), /session/i);
     assert.doesNotMatch(lines.join(""), /(?:TPS|TTFT|Req|Reasoning|Time|Session):/);
     assert.doesNotMatch(lines.join(""), /Eff:|Cache:|\$/);
@@ -471,7 +481,7 @@ describe("extension lifecycle", () => {
       prompt({ id: "prompt-2", startedAt: 103_000, completedAt: 104_000, durationMs: 1000 }),
     ]);
     const promptLines = text.split("\n");
-    assert.match(promptLines[0] ?? "", /· in 100 · out 100 · 2\.0s\/2\.0s$/);
+    assert.match(promptLines[0] ?? "", /· in 100 · out 100 · 2\.0s$/);
     assert.match(promptLines[1] ?? "", /· in 100 · out 100 · 1\.0s\/3\.0s$/);
   });
 

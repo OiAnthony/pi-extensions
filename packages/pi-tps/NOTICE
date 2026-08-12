@@ -1,0 +1,14 @@
+@oipsanthony/pi-tps contains code derived from:
+
+  pi-tps
+  Copyright (c) 2026
+  https://github.com/monotykamary/pi-tps
+
+The upstream pi-tps project states that it was originally derived from:
+
+  pi-mono .pi/extensions/tps.ts
+  Copyright (c) 2025 Mario Zechner
+  https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/tps.ts
+
+Both upstream works are available under the MIT License. This distribution
+includes modifications by Anthony, Copyright (c) 2026.
