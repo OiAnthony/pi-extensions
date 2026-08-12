@@ -1,5 +1,4 @@
 ---
-"@oipsanthony/pi-model-roles": minor
 "@oipsanthony/pi-session-title": minor
 "@oipsanthony/pi-prompt-translator": minor
 ---

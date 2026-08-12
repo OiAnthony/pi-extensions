@@ -25,6 +25,7 @@
   "files": [
     "LICENSE",
     "NOTICE",
+    "README.md",
     "extensions/core.ts",
     "extensions/index.ts",
     "package.json"

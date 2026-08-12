@@ -84,4 +84,3 @@
 - **WHEN** 派生 Pi 已进入 ready 状态但新 tab 聚焦失败
 - **THEN** 系统保留新 tab、派生 Pi 和派生 session
 - **THEN** 系统在源 Pi 显示包含新 tab 标识的警告
-
