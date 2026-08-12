@@ -115,13 +115,21 @@ export default function register(
     ctx: SessionContext,
     kind: NamingContext["kind"],
   ): Promise<void> => {
-    if (inFlight || !config.enabled || ctx.mode !== "tui") return;
+    if (inFlight) {
+      if (kind === "manual") ctx.ui.notify("Session title generation is already in progress.", "info");
+      return;
+    }
+    if (!config.enabled || ctx.mode !== "tui") return;
 
     const entries = branch(ctx);
     const turns = extractCompletedExchanges(entries).length;
     const currentName = sessionName(ctx);
     const namingContext = buildNamingContext(kind, entries, currentName);
-    if (!namingContext) return;
+    if (!namingContext) {
+      if (kind === "manual") ctx.ui.notify("No conversation is available to generate a session title.", "warning");
+      return;
+    }
+    if (kind === "manual") ctx.ui.notify("Generating session title...", "info");
 
     const captured = {
       epoch,
@@ -160,6 +168,7 @@ export default function register(
 
       if (result.kind === "keep") {
         persistState(createState("generated", turns, currentName));
+        if (kind === "manual") ctx.ui.notify("Session title is already up to date.", "info");
         return;
       }
 
@@ -169,6 +178,7 @@ export default function register(
       await syncDisplay(ctx, result.title);
       if (!contextStillCurrent(ctx, { ...captured, name: result.title })) return;
       persistState(createState("generated", turns, result.title));
+      if (kind === "manual") ctx.ui.notify(`Session title updated: ${result.title}`, "info");
     } catch {
       if (!controller.signal.aborted && contextStillCurrent(ctx, captured)) {
         persistState(createState("failed", turns, currentName));

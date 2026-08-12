@@ -12,7 +12,7 @@ pi install npm:@oipsanthony/pi-session-title
 
 ## 命令
 
-- `/session-title`：根据当前 active branch 最近的对话重新生成标题。
+- `/session-title`：根据当前 active branch 最近的对话重新生成标题。命令会提示生成开始，并在完成时说明标题已更新或无需变化。
 - `/session-title status`：显示启用状态、名称所有权和模型解析信息。
 
 手动设置精确名称请继续使用 Pi 内置 `/name`。

@@ -425,6 +425,32 @@ describe("extension lifecycle and race protection", () => {
     assert.equal(harness.getConfirmCalls(), 1);
     assert.equal(harness.getName(), "Generated replacement");
     assert.equal(harness.appended.at(-1)?.data.status, "generated");
+    assert.deepEqual(harness.notifications.slice(-2), [
+      "Generating session title...",
+      "Session title updated: Generated replacement",
+    ]);
+  });
+
+  test("the manual command reports when the current title remains accurate", async () => {
+    let calls = 0;
+    const harness = createHarness(async () => response(calls++ === 0 ? "Auth fix" : "KEEP"));
+    await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.context);
+    await harness.command("");
+    await harness.command("");
+
+    assert.deepEqual(harness.notifications.slice(-2), [
+      "Generating session title...",
+      "Session title is already up to date.",
+    ]);
+  });
+
+  test("the manual command reports when no conversation is available", async () => {
+    const harness = createHarness(async () => response("Unexpected title"));
+    harness.entries.splice(0, harness.entries.length);
+    await harness.command("");
+
+    assert.equal(harness.getName(), undefined);
+    assert.deepEqual(harness.notifications, ["No conversation is available to generate a session title."]);
   });
 
   test("the disabled manual command preserves title ownership", async () => {
