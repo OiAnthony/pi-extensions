@@ -19,6 +19,7 @@
   "license": "MIT",
   "keywords": ["pi-package", "model-roles", "model-selection"],
   "files": [
+    "LICENSE",
     "library/index.ts",
     "extensions/index.ts",
     "package.json",

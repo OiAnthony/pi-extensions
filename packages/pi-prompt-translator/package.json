@@ -22,6 +22,7 @@
     "chinese"
   ],
   "files": [
+    "LICENSE",
     "extensions/index.ts",
     "package.json",
     "README.md"

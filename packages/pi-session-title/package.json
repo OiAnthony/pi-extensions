@@ -22,6 +22,7 @@
     "herdr"
   ],
   "files": [
+    "LICENSE",
     "extensions/core.ts",
     "extensions/herdr.ts",
     "extensions/index.ts",
