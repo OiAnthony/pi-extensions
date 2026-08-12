@@ -22,9 +22,16 @@ pi -e ./packages/pi-fork-with-herdr
 /fork-with-herdr
 ```
 
+然后选择：
+
+- `Fork active branch now`：立即复制当前 active branch。
+- `Fork next /tree selection`：立即打开 tree selector，并从选中节点创建派生 session。
+
+选择 `Fork next /tree selection` 后，无需再手动执行 `/tree`。该 selector 复用 Pi 的 `TreeSelectorComponent`，支持 filter、折叠、标签和节点预览。选中节点后，插件直接从该节点物化派生 branch，不调用 `navigateTree()`，因此源 session 的 active leaf 和 editor 都保持不变。选择 user 或 custom message 时，派生 branch 截止到该消息之前，与 Pi 原生 `/tree` 的节点边界一致。选择 root user message 会得到空会话，当前不支持 fork。取消 selector 时不会 fork。
+
 命令会等待当前 Agent 完全 idle，然后读取 live session 的 active leaf。它会创建只包含 root 到该 leaf 路径的派生 session，在后台创建使用相同 cwd 的 Herdr tab，并在新 tab 的 root pane 中运行 `pi --session <derived-session-file>`。Herdr 确认新 Pi ready 后，命令才聚焦该 tab。
 
-源 tab 不会切换 session，源 session 也不会被替换。通过 `/tree` 选择历史分支后，命令复制的是内存中的 active branch，不是 session 文件最后写入的 entry。
+源 tab 不会切换 session，源 session 也不会被替换或跳转 active leaf。立即 fork 时，插件复制当前内存中的 active branch；tree selection 模式复制选中节点对应的 branch。
 
 ## 前置条件
 
