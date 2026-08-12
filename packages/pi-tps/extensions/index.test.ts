@@ -43,6 +43,8 @@ interface Harness {
   commands: Map<string, CommandHandler>;
   messageRendererTypes: string[];
   entryRendererTypes: string[];
+  messageRenderers: Map<string, (...args: unknown[]) => unknown>;
+  entryRenderers: Map<string, (...args: unknown[]) => unknown>;
   sentMessages: SentMessage[];
   entries: Array<{ customType: string; data: unknown }>;
   notifications: string[];
@@ -122,11 +124,13 @@ function assistant(overrides: Partial<AssistantMessage> = {}): AssistantMessage 
   };
 }
 
-function createHarness(): Harness {
+function createHarness(options: { entryRenderer?: boolean } = {}): Harness {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, CommandHandler>();
   const messageRendererTypes: string[] = [];
   const entryRendererTypes: string[] = [];
+  const messageRenderers = new Map<string, (...args: unknown[]) => unknown>();
+  const entryRenderers = new Map<string, (...args: unknown[]) => unknown>();
   const sentMessages: SentMessage[] = [];
   const entries: Array<{ customType: string; data: unknown }> = [];
   const notifications: string[] = [];
@@ -149,12 +153,18 @@ function createHarness(): Harness {
     registerCommand(name: string, options: { handler: CommandHandler }) {
       commands.set(name, options.handler);
     },
-    registerMessageRenderer(customType: string) {
+    registerMessageRenderer(customType: string, renderer: (...args: unknown[]) => unknown) {
       messageRendererTypes.push(customType);
+      messageRenderers.set(customType, renderer);
     },
-    registerEntryRenderer(customType: string) {
-      entryRendererTypes.push(customType);
-    },
+    ...(options.entryRenderer === false
+      ? {}
+      : {
+          registerEntryRenderer(customType: string, renderer: (...args: unknown[]) => unknown) {
+            entryRendererTypes.push(customType);
+            entryRenderers.set(customType, renderer);
+          },
+        }),
     sendMessage(message: SentMessage) {
       sentMessages.push(message);
     },
@@ -186,6 +196,8 @@ function createHarness(): Harness {
     commands,
     messageRendererTypes,
     entryRendererTypes,
+    messageRenderers,
+    entryRenderers,
     sentMessages,
     entries,
     notifications,
@@ -292,6 +304,37 @@ describe("metric aggregation", () => {
 });
 
 describe("extension lifecycle", () => {
+  test("renders persisted metrics with the muted text color", () => {
+    const harness = createHarness();
+    const colors: string[] = [];
+    const theme = {
+      fg(color: string, text: string) {
+        colors.push(color);
+        return text;
+      },
+    };
+    const details = { version: 1, line: "TPS 1.0 tok/s" };
+
+    harness.messageRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ details }, {}, theme);
+    harness.entryRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ data: details }, {}, theme);
+
+    assert.deepEqual(colors, ["muted", "muted"]);
+  });
+
+  test("loads and displays prompt metrics when the host lacks entry renderers", async () => {
+    const harness = createHarness({ entryRenderer: false });
+    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
+    await completeRequest(harness, { ttftMs: 500, generationMs: 1000, totalMs: 1600 });
+    await emit(harness, "agent_settled", {});
+
+    assert.deepEqual(harness.entryRendererTypes, []);
+    assert.deepEqual(harness.entries.map((entry) => entry.customType), [REQUEST_ENTRY_TYPE, PROMPT_ENTRY_TYPE]);
+    assert.match(
+      harness.notifications[0] ?? "",
+      /^TPS 100\.0 tok\/s · TTFT 500ms · in 100 · out 100 · 1\.6s$/,
+    );
+  });
+
   test("records exact request usage, TTFT, prompt duration, and persisted entries", async () => {
     const harness = createHarness();
     await emit(harness, "session_start", { reason: "startup" });
@@ -349,6 +392,31 @@ describe("extension lifecycle", () => {
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     assert.equal(recordedRequest.ttftMs, 500);
     assert.equal(recordedRequest.generationMs, 1000);
+  });
+
+  test("uses turn_end as the generation boundary when OMP omits message_end", async () => {
+    const harness = createHarness();
+    const message = assistant({ usage: { ...usage, output: 11, cost: { ...usage.cost } } });
+    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
+    await emit(harness, "before_provider_request", { payload: {} });
+    harness.advance(3900);
+    await emit(harness, "message_update", {
+      message,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: message },
+    });
+    harness.advance(8500);
+    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
+    harness.advance(100);
+    await emit(harness, "agent_settled", {});
+
+    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
+    assert.equal(recordedRequest.ttftMs, 3900);
+    assert.equal(recordedRequest.generationMs, 8500);
+    assert.ok(recordedRequest.outputTps !== null);
+    assert.match(
+      (harness.entries[2]!.data as { line?: string }).line ?? "",
+      /^TPS 1\.3 tok\/s · TTFT 3\.9s · in 100 · out 11 · 12\.5s$/,
+    );
   });
 
   test("uses agent_end as a prompt completion boundary without double persistence", async () => {

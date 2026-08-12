@@ -18,6 +18,7 @@ import {
   rateAfterStall,
   renderReport,
   restoreMetrics,
+  type PromptDisplayData,
   type PromptMetrics,
   type RequestMetrics,
 } from "./core.js";
@@ -88,10 +89,13 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
     return new Text(theme.fg("muted", message.details.line), 1, 0);
   });
 
-  pi.registerEntryRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (entry, _options, theme) => {
-    if (!isPromptDisplayData(entry.data)) return undefined;
-    return new Text(theme.fg("muted", entry.data.line), 1, 0);
-  });
+  const supportsEntryRenderer = typeof pi.registerEntryRenderer === "function";
+  if (supportsEntryRenderer) {
+    pi.registerEntryRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (entry, _options, theme) => {
+      if (!isPromptDisplayData(entry.data)) return undefined;
+      return new Text(theme.fg("muted", entry.data.line), 1, 0);
+    });
+  }
 
   const restore = (ctx: ExtensionContext): void => {
     const restored = restoreMetrics(ctx.sessionManager);
@@ -219,6 +223,9 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
 
   pi.on("turn_end", (event) => {
     if (!active?.currentRequest || !isAssistantMessage(event.message)) return;
+    // OMP may omit message_end for the assistant response. turn_end is the
+    // equivalent completed-response boundary; Pi keeps its earlier timestamp.
+    active.currentRequest.messageEndMono ??= clock.now();
     finalizeRequest(active.currentRequest, event.message);
   });
 
@@ -240,10 +247,15 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
     prompts.push(prompt);
     sessionProcessingMs += prompt.durationMs;
     active = undefined;
-    pi.appendEntry(PROMPT_DISPLAY_MESSAGE_TYPE, {
+    const displayData = {
       version: 1,
       line: promptStatus(prompt, sessionProcessingMs),
-    });
+    } satisfies PromptDisplayData;
+    if (supportsEntryRenderer) {
+      pi.appendEntry(PROMPT_DISPLAY_MESSAGE_TYPE, displayData);
+    } else {
+      ctx.ui.notify(displayData.line, "info");
+    }
   };
 
   pi.on("agent_end", (_event, ctx) => settlePrompt(ctx));

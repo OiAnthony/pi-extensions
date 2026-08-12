@@ -11,6 +11,7 @@
 ## Pi Constraints
 
 - Project-local extensions load after the project is trusted. Do not claim that `pi --approve` establishes persistent explicit trust unless official documentation verifies that behavior.
+- `pi-tps` 必须同时支持 Pi 和 OMP。处理消息生命周期时，不得假设两个运行时都会发出相同的可选事件；测试必须覆盖 Pi 的 `message_end` 路径和 OMP 缺少该事件时的 `turn_end` 回退路径。
 
 ## 文档语言
 
