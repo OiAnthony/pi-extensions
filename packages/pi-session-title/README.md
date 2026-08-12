@@ -24,6 +24,7 @@ pi install npm:@oipsanthony/pi-session-title
 ```json
 {
   "enabled": true,
+  "model": "@tiny",
   "thinkingLevel": "minimal",
   "timeoutMs": 5000,
   "maxTokens": 40,
@@ -39,9 +40,11 @@ pi install npm:@oipsanthony/pi-session-title
 }
 ```
 
-可用 `model` 指定命名模型，例如 `openai-codex/gpt-5.4-mini`。省略时使用触发命名时的 Pi 当前模型；指定模型不可用时回退当前模型。`refreshTurns` 设为 `0` 可关闭周期重评估。
+`model` 可使用直接模型（例如 `openai-codex/gpt-5.4-mini`）或全局角色（例如 `@tiny`）。角色配置位于 `${PI_CODING_AGENT_DIR:-~/.pi/agent}/model-roles.json`，格式见 [`@oipsanthony/pi-model-roles`](../pi-model-roles/README.md)。省略 `model` 时使用触发命名时的 Pi 当前模型；角色未知、引用循环、目标不存在或认证失败时，插件显示一次 warning 并回退当前模型。
 
-配置修改后执行 `/reload`。
+thinking level 按“本插件显式 `thinkingLevel`、Role 后缀、本插件默认 `minimal`”确定。因此，如需使用 `@slow:xhigh` 等角色档位，请从配置中省略 `thinkingLevel`；显式配置始终优先。
+
+修改本插件或 `model-roles.json` 后执行 `/reload`。`/session-title status` 会显示请求目标、最终模型、最终 thinking level 和当前模型回退状态。`refreshTurns` 设为 `0` 可关闭周期重评估。
 
 ## Herdr
 

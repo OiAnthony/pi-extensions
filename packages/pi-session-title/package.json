@@ -35,6 +35,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "@oipsanthony/pi-model-roles": "workspace:*"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"

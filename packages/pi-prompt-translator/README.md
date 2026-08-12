@@ -37,11 +37,13 @@ omp --extension ./packages/pi-prompt-translator
 
 ## 配置
 
-可选配置文件的路径取决于宿主：Pi 使用 `~/.pi/agent/pi-prompt-translator.json`，OMP 使用 `~/.omp/agent/pi-prompt-translator.json`。两个宿主保留独立的模型选择和缓存；修改配置后需要重启当前会话。根值必须是 JSON object；缺失、格式错误或未知字段都会被忽略，不会阻止宿主启动。
+可选配置文件的路径取决于宿主：Pi 使用 `~/.pi/agent/pi-prompt-translator.json`，OMP 使用 `~/.omp/agent/pi-prompt-translator.json`。两个宿主保留独立的模型选择和缓存。根值必须是 JSON object；缺失、格式错误或未知字段都会被忽略，不会阻止宿主启动。
+
+`model` 也可引用全局模型角色。角色文件在 Pi 中为 `~/.pi/agent/model-roles.json`，在 OMP 等兼容宿主中为该宿主 agent directory 下的 `model-roles.json`（OMP 默认为 `~/.omp/agent/model-roles.json`）。角色格式见 [`@oipsanthony/pi-model-roles`](../pi-model-roles/README.md)。Pi 修改任一配置后执行 `/reload`；兼容宿主不支持 reload 时重启当前会话。
 
 ```json
 {
-  "model": "openai/gpt-5.4",
+  "model": "@translator",
   "shortcut": "ctrl+shift+t",
   "cache": {
     "enabled": true,
@@ -53,7 +55,7 @@ omp --extension ./packages/pi-prompt-translator
 
 | 字段 | 说明 |
 |---|---|
-| `model` | 可选的翻译模型，格式为 `provider/modelId`。只按第一个 `/` 分隔，因此 `openrouter/anthropic/claude-sonnet-4` 会使用 Provider `openrouter` 与 model ID `anthropic/claude-sonnet-4`。省略或不可用时回退到当前 Pi 模型。 |
+| `model` | 可选的翻译模型。支持 `@role` 或直接 `provider/modelId`；直接模型只按第一个 `/` 分隔，因此 `openrouter/anthropic/claude-sonnet-4` 使用 Provider `openrouter` 与 model ID `anthropic/claude-sonnet-4`。Role 的 thinking 后缀会传给翻译请求；未指定时不添加 `reasoning`。省略或解析、模型、认证不可用时回退当前 Pi 模型并沿用现有 warning。 |
 | `shortcut` | 可选快捷键。缺失或空字符串时使用默认值 `ctrl+shift+t`。 |
 | `cache` | 可选缓存配置。省略时启用，条目 90 天过期，逻辑载荷上限为 10 MiB；设为 `false` 可禁用缓存。 |
 
@@ -69,7 +71,7 @@ omp --extension ./packages/pi-prompt-translator
 
 停止宿主进程后删除 `pi-prompt-translator.db` 即可清空当前宿主缓存。
 
-扩展通过 Pi Model Registry 使用已配置的 Provider 和认证信息；不会在配置、session 或日志中保存 API Key。只有缓存未命中的翻译会产生所选模型的调用成本。
+扩展通过宿主 Model Registry 使用已配置的 Provider 和认证信息；Role 解析失败、目标模型不存在或认证失败时回退当前模型。扩展不会在配置、session 或日志中保存 API Key。只有缓存未命中的翻译会产生所选模型的调用成本。
 
 ## 等待与失败
 

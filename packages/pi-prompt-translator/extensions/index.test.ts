@@ -7,6 +7,11 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { UserMessage } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  normalizeModelRoles,
+  type ModelAuth,
+  type ModelRolesConfig,
+} from "@oipsanthony/pi-model-roles";
 import register, {
   DEFAULT_CACHE_MAX_AGE_DAYS,
   DEFAULT_CACHE_MAX_SIZE_BYTES,
@@ -14,7 +19,6 @@ import register, {
   createTranslationCache,
   createTranslationSession,
   normalizeConfig,
-  parseModelReference,
   resolveTranslationModel,
   shouldTranslateEditorText,
   translateEditorDraft,
@@ -40,7 +44,7 @@ function response(text: string, stopReason = "stop"): CompletionResult {
 
 function createRegistry(options: {
   configured?: Model;
-  auth?: (model: Model) => Promise<{ ok: boolean; apiKey?: string }>;
+  auth?: (model: Model) => Promise<ModelAuth>;
 } = {}): TranslationModelRegistry {
   return {
     find: (provider, modelId) =>
@@ -75,10 +79,12 @@ function createContext(draft: string, registry = createRegistry()): {
 function createDependencies(
   complete: TranslationDependencies["complete"],
   cache = createMemoryCache(),
+  modelRoles?: ModelRolesConfig,
 ): TranslationDependencies {
   return {
     complete,
     createCache: () => cache,
+    ...(modelRoles ? { modelRoles } : {}),
   };
 }
 
@@ -196,26 +202,42 @@ describe("configuration and model resolution", () => {
     );
   });
 
-  test("splits model identifiers at the first slash", () => {
-    assert.deepEqual(parseModelReference("openrouter/anthropic/claude-sonnet-4"), {
-      provider: "openrouter",
-      modelId: "anthropic/claude-sonnet-4",
+  test("resolves role models and reports role fallback", async () => {
+    const modelRoles = normalizeModelRoles({
+      roles: { translator: "openrouter/anthropic/claude-sonnet-4:high" },
     });
-    assert.equal(parseModelReference("openrouter"), undefined);
-    assert.equal(parseModelReference("/model"), undefined);
+    const resolved = await resolveTranslationModel(
+      "@translator",
+      currentModel,
+      createRegistry({ configured: configuredModel }),
+      modelRoles,
+    );
+    assert.equal(resolved.target?.model, configuredModel);
+    assert.equal(resolved.thinkingLevel, "high");
+    assert.equal(resolved.configuredModelFailed, false);
+
+    const unknown = await resolveTranslationModel(
+      "@missing",
+      currentModel,
+      createRegistry(),
+      modelRoles,
+    );
+    assert.equal(unknown.target?.model, currentModel);
+    assert.equal(unknown.configuredModelFailed, true);
   });
 
-  test("falls back to the current model when configured model authentication fails", async () => {
+  test("falls back when a role model authentication fails", async () => {
     const resolved = await resolveTranslationModel(
-      "openrouter/anthropic/claude-sonnet-4",
+      "@translator",
       currentModel,
       createRegistry({
         configured: configuredModel,
-        auth: async (model) =>
-          model === configuredModel ? { ok: false } : { ok: true, apiKey: "current-key" },
+        auth: async (model) => model === configuredModel
+          ? { ok: false }
+          : { ok: true, apiKey: "current-key" },
       }),
+      normalizeModelRoles({ roles: { translator: "openrouter/anthropic/claude-sonnet-4" } }),
     );
-
     assert.equal(resolved.target?.model, currentModel);
     assert.equal(resolved.configuredModelFailed, true);
   });
@@ -265,6 +287,88 @@ describe("on-demand editor translation", () => {
     await translation;
     assert.equal(state.getEditorText(), "Write tests for this module.");
     assert.equal(completionCalls, 1);
+  });
+
+  test("passes role thinking and complete authentication metadata", async () => {
+    const registry = createRegistry({
+      configured: configuredModel,
+      auth: async () => ({
+        ok: true,
+        apiKey: "",
+        headers: { "x-auth": "header" },
+        env: { AUTH_TOKEN: "token" },
+      }),
+    });
+    const state = createContext("翻译这个提示。", registry);
+    let selectedModel: Model | undefined;
+    let completionOptions: Parameters<TranslationDependencies["complete"]>[2];
+    const modelRoles = normalizeModelRoles({
+      roles: { translator: "openrouter/anthropic/claude-sonnet-4:high" },
+    });
+
+    await translateEditorDraft(
+      state.context,
+      { ...defaultConfig(), model: "@translator" },
+      createDependencies(async (model, _request, options) => {
+        selectedModel = model;
+        completionOptions = options;
+        return response("Translate this prompt.");
+      }, createMemoryCache(), modelRoles),
+    );
+
+    assert.equal(selectedModel, configuredModel);
+    assert.equal(completionOptions?.apiKey, "");
+    assert.deepEqual(completionOptions?.headers, { "x-auth": "header" });
+    assert.deepEqual(completionOptions?.env, { AUTH_TOKEN: "token" });
+    assert.equal(completionOptions?.reasoning, "high");
+  });
+
+  test("omits reasoning when a role has no thinking suffix", async () => {
+    const state = createContext("翻译这个提示。", createRegistry({ configured: configuredModel }));
+    let completionOptions: Parameters<TranslationDependencies["complete"]>[2];
+    await translateEditorDraft(
+      state.context,
+      { ...defaultConfig(), model: "@translator" },
+      createDependencies(async (_model, _request, options) => {
+        completionOptions = options;
+        return response("Translate this prompt.");
+      }, createMemoryCache(), normalizeModelRoles({
+        roles: { translator: "openrouter/anthropic/claude-sonnet-4" },
+      })),
+    );
+    assert.equal(Object.hasOwn(completionOptions ?? {}, "reasoning"), false);
+  });
+
+  test("keeps direct model references working", async () => {
+    const state = createContext("翻译这个提示。", createRegistry({ configured: configuredModel }));
+    let selectedModel: Model | undefined;
+    await translateEditorDraft(
+      state.context,
+      { ...defaultConfig(), model: "openrouter/anthropic/claude-sonnet-4" },
+      createDependencies(async (model) => {
+        selectedModel = model;
+        return response("Translate this prompt.");
+      }, createMemoryCache(), normalizeModelRoles({ roles: {} })),
+    );
+    assert.equal(selectedModel, configuredModel);
+  });
+
+  test("uses the existing configured-model warning when role resolution falls back", async () => {
+    const state = createContext("翻译这个提示。");
+    await translateEditorDraft(
+      state.context,
+      { ...defaultConfig(), model: "@missing" },
+      createDependencies(
+        async () => response("Translate this prompt."),
+        createMemoryCache(),
+        normalizeModelRoles({ roles: {} }),
+      ),
+    );
+    assert.equal(state.getEditorText(), "Translate this prompt.");
+    assert.equal(
+      state.notifications.at(-1)?.message,
+      "Configured translation model unavailable; using the current Pi model.",
+    );
   });
 
   test("does not call a model or normalize non-Chinese text", async () => {

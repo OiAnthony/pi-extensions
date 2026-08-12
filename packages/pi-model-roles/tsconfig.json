@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["bun"],
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["library/**/*", "extensions/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

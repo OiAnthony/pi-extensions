@@ -1,5 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  isResolvedModelTarget,
+  loadModelRoles,
+  resolveModelTarget,
+  selectThinkingLevel,
+} from "@oipsanthony/pi-model-roles";
+import {
   STATE_ENTRY_TYPE,
   buildNamingContext,
   configuredModelLabel,
@@ -7,7 +13,6 @@ import {
   extractCompletedExchanges,
   loadConfig,
   nextAutomaticEvaluation,
-  parseModelReference,
   renderTerminalTitle,
   requestTitle,
   restoreState,
@@ -42,6 +47,8 @@ export default function register(
   let namingWarningShown = false;
   let herdrWarningShown = false;
   let resolvedModel: string | undefined;
+  let resolvedThinking: string | undefined;
+  let resolvedFallback = false;
 
   const reporter: HerdrReporter = createHerdrReporter(
     dependencies.environment ? {
@@ -151,12 +158,15 @@ export default function register(
       if (controller.signal.aborted || !contextStillCurrent(ctx, captured)) return;
 
       resolvedModel = result.model ?? resolvedModel;
+      resolvedThinking = result.thinkingLevel ?? resolvedThinking;
+      resolvedFallback = result.configuredModelFailed;
       if (result.configuredModelFailed) {
+        const requested = result.requestedModel ?? config.model ?? "current Pi model";
         showNamingWarning(
           ctx,
           result.kind === "failed"
-            ? "Configured session-title model is unavailable."
-            : "Configured session-title model is unavailable; the current Pi model was used.",
+            ? `Configured session-title model ${requested} is unavailable.`
+            : `Configured session-title model ${requested} is unavailable; ${result.model} (${result.thinkingLevel}) was used.`,
         );
       }
 
@@ -222,6 +232,8 @@ export default function register(
     namingWarningShown = false;
     herdrWarningShown = false;
     resolvedModel = undefined;
+    resolvedThinking = undefined;
+    resolvedFallback = false;
     state = restoreState(branch(ctx));
 
     const currentName = sessionName(ctx);
@@ -283,23 +295,29 @@ export default function register(
         const current = sessionName(ctx) ?? "(unnamed)";
         const currentState = restoreState(branch(ctx));
         let finalModel = resolvedModel;
+        let finalThinking = resolvedThinking;
+        let fallback = resolvedFallback;
         if (!finalModel) {
-          const configured = parseModelReference(config.model);
-          const configuredModel = configured
-            ? ctx.modelRegistry.find(configured.provider, configured.modelId)
-            : undefined;
-          if (configuredModel) {
-            try {
-              const auth = await ctx.modelRegistry.getApiKeyAndHeaders(configuredModel);
-              if (auth.ok && auth.apiKey) finalModel = `${configuredModel.provider}/${configuredModel.id}`;
-            } catch {
-              // Status falls back to the current model when configured authentication is unavailable.
-            }
+          const resolution = await resolveModelTarget({
+            target: config.model,
+            currentModel: ctx.model,
+            modelRegistry: ctx.modelRegistry,
+            config: dependencies.title?.modelRoles ?? loadModelRoles(),
+          });
+          if (isResolvedModelTarget(resolution)) {
+            finalModel = resolution.modelId;
+            finalThinking = selectThinkingLevel(
+              config.thinkingLevelExplicit !== false ? config.thinkingLevel : undefined,
+              resolution.thinkingLevel,
+              config.thinkingLevel,
+            );
+            fallback = resolution.fallback;
           }
-          finalModel ??= ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "(unavailable)";
         }
+        finalModel ??= "(unavailable)";
+        finalThinking ??= config.thinkingLevel;
         ctx.ui.notify(
-          `enabled=${config.enabled}; state=${currentState?.status ?? "pending"}; name=${current}; configured=${configuredModelLabel(config)}; resolved=${finalModel}`,
+          `enabled=${config.enabled}; state=${currentState?.status ?? "pending"}; name=${current}; requested=${configuredModelLabel(config)}; resolved=${finalModel}; thinking=${finalThinking}; fallback=${fallback ? "current Pi model" : "none"}`,
           "info",
         );
         return;

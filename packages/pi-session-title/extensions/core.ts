@@ -1,5 +1,13 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  isResolvedModelTarget,
+  loadModelRoles,
+  resolveModelTarget,
+  selectThinkingLevel,
+  type ModelRolesConfig,
+  type ThinkingLevel,
+} from "@oipsanthony/pi-model-roles";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -8,7 +16,7 @@ export const CONFIG_PATH = join(getAgentDir(), "pi-session-title.json");
 export const MAX_CONTEXT_LENGTH = 4_000;
 export const MAX_RECENT_MESSAGES = 8;
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type { ThinkingLevel } from "@oipsanthony/pi-model-roles";
 export type SessionTitleStatus = "generated" | "failed" | "manual";
 type CompletionModel = Parameters<typeof complete>[0];
 type CompletionOptions = Parameters<typeof complete>[2];
@@ -26,6 +34,7 @@ export interface SessionTitleConfig {
   enabled: boolean;
   model?: string;
   thinkingLevel: ThinkingLevel;
+  thinkingLevelExplicit?: boolean;
   timeoutMs: number;
   maxTokens: number;
   maxLength: number;
@@ -37,11 +46,6 @@ export interface SessionTitleConfig {
   herdr: {
     enabled: boolean;
   };
-}
-
-export interface ModelReference {
-  provider: string;
-  modelId: string;
 }
 
 export interface TitleMessage {
@@ -81,16 +85,37 @@ export interface TitleDependencies {
     request: Parameters<typeof complete>[1],
     options: CompletionOptions,
   ): Promise<CompletionResponse>;
+  modelRoles?: ModelRolesConfig;
 }
 
 export type TitleRequestResult =
-  | { kind: "title"; title: string; model: string; configuredModelFailed: boolean }
-  | { kind: "keep"; model: string; configuredModelFailed: boolean }
-  | { kind: "failed"; model?: string; configuredModelFailed: boolean };
+  | {
+      kind: "title";
+      title: string;
+      model: string;
+      thinkingLevel: ThinkingLevel;
+      requestedModel?: string;
+      configuredModelFailed: boolean;
+    }
+  | {
+      kind: "keep";
+      model: string;
+      thinkingLevel: ThinkingLevel;
+      requestedModel?: string;
+      configuredModelFailed: boolean;
+    }
+  | {
+      kind: "failed";
+      model?: string;
+      thinkingLevel?: ThinkingLevel;
+      requestedModel?: string;
+      configuredModelFailed: boolean;
+    };
 
 const DEFAULT_CONFIG: SessionTitleConfig = {
   enabled: true,
   thinkingLevel: "minimal",
+  thinkingLevelExplicit: false,
   timeoutMs: 5_000,
   maxTokens: 40,
   maxLength: 48,
@@ -151,6 +176,7 @@ export function normalizeConfig(value: unknown): SessionTitleConfig {
     enabled: typeof input.enabled === "boolean" ? input.enabled : DEFAULT_CONFIG.enabled,
     ...(model ? { model } : {}),
     thinkingLevel,
+    thinkingLevelExplicit: typeof input.thinkingLevel === "string" && THINKING_LEVELS.has(input.thinkingLevel as ThinkingLevel),
     timeoutMs: positiveSafeInteger(input.timeoutMs, DEFAULT_CONFIG.timeoutMs),
     maxTokens: positiveSafeInteger(input.maxTokens, DEFAULT_CONFIG.maxTokens),
     maxLength: positiveSafeInteger(input.maxLength, DEFAULT_CONFIG.maxLength),
@@ -173,15 +199,6 @@ export function loadConfig(path = CONFIG_PATH): SessionTitleConfig {
   } catch {
     return normalizeConfig(undefined);
   }
-}
-
-export function parseModelReference(value: string | undefined): ModelReference | undefined {
-  if (!value) return undefined;
-  const separator = value.indexOf("/");
-  if (separator <= 0 || separator === value.length - 1) return undefined;
-  const provider = value.slice(0, separator).trim();
-  const modelId = value.slice(separator + 1).trim();
-  return provider && modelId ? { provider, modelId } : undefined;
 }
 
 export function codePointLength(value: string): number {
@@ -367,9 +384,10 @@ function modelKey(model: CompletionModel): string {
 
 async function completeWithTimeout(
   model: CompletionModel,
-  auth: { apiKey: string; headers?: Record<string, string>; env?: Record<string, string> },
+  auth: { apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> },
   prompt: string,
   config: SessionTitleConfig,
+  thinkingLevel: ThinkingLevel,
   dependencies: TitleDependencies,
   outerSignal?: AbortSignal,
 ): Promise<CompletionResponse> {
@@ -392,7 +410,7 @@ async function completeWithTimeout(
         headers: auth.headers,
         env: auth.env,
         maxTokens: config.maxTokens,
-        reasoning: config.thinkingLevel,
+        reasoning: thinkingLevel,
         signal: controller.signal,
         cacheRetention: "none",
       } as CompletionOptions,
@@ -423,49 +441,85 @@ export async function requestTitle(
   signal?: AbortSignal,
   dependencies: TitleDependencies = defaultDependencies,
 ): Promise<TitleRequestResult> {
-  const configuredReference = parseModelReference(config.model);
-  let configuredModelFailed = Boolean(config.model && !configuredReference);
-  const candidates: Array<{ model: CompletionModel; configured: boolean }> = [];
-  if (configuredReference) {
-    const configured = context.modelRegistry.find(configuredReference.provider, configuredReference.modelId);
-    if (configured) candidates.push({ model: configured, configured: true });
-    else configuredModelFailed = true;
-  }
-  if (context.model && !candidates.some(({ model }) => modelKey(model) === modelKey(context.model!))) {
-    candidates.push({ model: context.model, configured: false });
+  const modelRoles = dependencies.modelRoles ?? loadModelRoles();
+  const first = await resolveModelTarget({
+    target: config.model,
+    currentModel: context.model,
+    modelRegistry: context.modelRegistry,
+    config: modelRoles,
+  });
+  const initialConfiguredFailure = Boolean(config.model && (!isResolvedModelTarget(first) || first.fallback));
+  const resolutions = isResolvedModelTarget(first) ? [first] : [];
+  if (
+    config.model
+    && isResolvedModelTarget(first)
+    && !first.fallback
+    && context.model
+    && modelKey(first.model) !== modelKey(context.model)
+  ) {
+    const current = await resolveModelTarget({
+      currentModel: context.model,
+      modelRegistry: context.modelRegistry,
+      config: modelRoles,
+    });
+    if (isResolvedModelTarget(current)) resolutions.push(current);
   }
 
   const prompt = formatPrompt(namingContext, config.maxLength);
   let lastModel: string | undefined;
-  for (const candidate of candidates) {
+  let lastThinking: ThinkingLevel | undefined;
+  let configuredModelFailed = initialConfiguredFailure;
+  for (const resolution of resolutions) {
     if (signal?.aborted) break;
-    lastModel = modelKey(candidate.model);
+    lastModel = resolution.modelId;
+    lastThinking = selectThinkingLevel(
+      config.thinkingLevelExplicit !== false ? config.thinkingLevel : undefined,
+      resolution.thinkingLevel,
+      config.thinkingLevel,
+    )!;
     try {
-      const auth = await context.modelRegistry.getApiKeyAndHeaders(candidate.model);
-      if (!auth.ok || !auth.apiKey) {
-        if (candidate.configured) configuredModelFailed = true;
-        continue;
-      }
       const response = await completeWithTimeout(
-        candidate.model,
-        { apiKey: auth.apiKey, headers: auth.headers, env: auth.env },
+        resolution.model,
+        resolution.auth,
         prompt,
         config,
+        lastThinking,
         dependencies,
         signal,
       );
       const raw = responseText(response);
       if (namingContext.kind !== "initial" && raw.trim() === "KEEP") {
-        return { kind: "keep", model: lastModel, configuredModelFailed };
+        return {
+          kind: "keep",
+          model: lastModel,
+          thinkingLevel: lastThinking,
+          ...(config.model ? { requestedModel: config.model } : {}),
+          configuredModelFailed,
+        };
       }
       const title = cleanTitle(raw, config.maxLength);
-      if (title) return { kind: "title", title, model: lastModel, configuredModelFailed };
-      if (candidate.configured) configuredModelFailed = true;
+      if (title) {
+        return {
+          kind: "title",
+          title,
+          model: lastModel,
+          thinkingLevel: lastThinking,
+          ...(config.model ? { requestedModel: config.model } : {}),
+          configuredModelFailed,
+        };
+      }
     } catch {
-      if (candidate.configured) configuredModelFailed = true;
+      // Preserve the existing current-model retry after a configured completion failure.
     }
+    if (resolution.source !== "current") configuredModelFailed = true;
   }
-  return { kind: "failed", model: lastModel, configuredModelFailed };
+  return {
+    kind: "failed",
+    ...(lastModel ? { model: lastModel } : {}),
+    ...(lastThinking ? { thinkingLevel: lastThinking } : {}),
+    ...(config.model ? { requestedModel: config.model } : {}),
+    configuredModelFailed,
+  };
 }
 
 export function createState(
