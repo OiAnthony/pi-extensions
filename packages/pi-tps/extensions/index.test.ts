@@ -326,6 +326,31 @@ describe("extension lifecycle", () => {
     );
   });
 
+  test("starts TTFT and generation timing at the first content delta", async () => {
+    const harness = createHarness();
+    const message = assistant();
+    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
+    await emit(harness, "before_provider_request", { payload: {} });
+    harness.advance(100);
+    await emit(harness, "message_update", {
+      message,
+      assistantMessageEvent: { type: "text_start", contentIndex: 0, partial: message },
+    });
+    harness.advance(400);
+    await emit(harness, "message_update", {
+      message,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: message },
+    });
+    harness.advance(1000);
+    await emit(harness, "message_end", { message });
+    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
+    await emit(harness, "agent_settled", {});
+
+    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
+    assert.equal(recordedRequest.ttftMs, 500);
+    assert.equal(recordedRequest.generationMs, 1000);
+  });
+
   test("uses agent_end as a prompt completion boundary without double persistence", async () => {
     const harness = createHarness();
     await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });

@@ -189,6 +189,7 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   pi.on("message_update", (event) => {
     const request = active?.currentRequest;
     if (!request) return;
+    if (!isFirstContentDelta(event.assistantMessageEvent)) return;
     const now = clock.now();
     // First content delta: capture TTFT and seed the stream gap clock. The gap
     // from request start to this update is provider/network latency, not a stall.
@@ -197,7 +198,6 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       request.lastUpdateMono = now;
       return;
     }
-    if (!isFirstContentDelta(event.assistantMessageEvent)) return;
     // Subsequent deltas: gaps ≥ STALL_THRESHOLD_MS are inference stalls (GPU or
     // server queueing). The full gap counts as stall time; consecutive stalled
     // updates merge into one stall event, mirroring the original pi-tps.
