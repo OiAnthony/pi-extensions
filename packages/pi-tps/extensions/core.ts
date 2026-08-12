@@ -331,7 +331,7 @@ export function promptStatus(prompt: PromptMetrics, sessionProcessingMs = prompt
   const duration = formatDuration(prompt.durationMs);
   parts.push(sessionProcessingMs === prompt.durationMs
     ? duration
-    : `${duration}/${formatDuration(sessionProcessingMs)}`);
+    : `${formatDuration(sessionProcessingMs)}(+${duration})`);
   return parts.join(" · ");
 }
 

@@ -482,7 +482,7 @@ describe("extension lifecycle", () => {
     ]);
     const promptLines = text.split("\n");
     assert.match(promptLines[0] ?? "", /· in 100 · out 100 · 2\.0s$/);
-    assert.match(promptLines[1] ?? "", /· in 100 · out 100 · 1\.0s\/3\.0s$/);
+    assert.match(promptLines[1] ?? "", /· in 100 · out 100 · 3\.0s\(\+1\.0s\)$/);
   });
 
   test("keeps one line for every completed prompt in session order", () => {
