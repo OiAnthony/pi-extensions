@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-fork-with-herdr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fork the active Pi session branch into a new Herdr tab.",
   "type": "module",
   "repository": {
