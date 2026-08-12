@@ -1,0 +1,46 @@
+{
+  "name": "@oipsanthony/pi-model-roles",
+  "version": "0.1.0",
+  "description": "Shared model role resolution and optional role cycling for Pi extensions.",
+  "type": "module",
+  "exports": {
+    ".": "./library/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OiAnthony/pi-packages.git",
+    "directory": "packages/pi-model-roles"
+  },
+  "bugs": {
+    "url": "https://github.com/OiAnthony/pi-packages/issues"
+  },
+  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-model-roles#readme",
+  "author": "Anthony",
+  "license": "MIT",
+  "keywords": ["pi-package", "model-roles", "model-selection"],
+  "files": [
+    "LICENSE",
+    "library/index.ts",
+    "extensions/index.ts",
+    "package.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test library extensions",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": ["extensions/index.ts"]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "0.83.0",
+    "@types/bun": "1.3.14"
+  }
+}

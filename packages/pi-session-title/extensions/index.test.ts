@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { normalizeModelRoles } from "@oipsanthony/pi-model-roles";
 import register, {
   MAX_CONTEXT_LENGTH,
   STATE_ENTRY_TYPE,
@@ -13,7 +14,6 @@ import register, {
   extractRecentMessages,
   nextAutomaticEvaluation,
   normalizeConfig,
-  parseModelReference,
   renderTerminalTitle,
   requestTitle,
   restoreState,
@@ -58,13 +58,7 @@ async function waitFor(condition: () => boolean): Promise<void> {
 }
 
 describe("configuration and title normalization", () => {
-  test("normalizes invalid fields and splits model IDs at the first slash", () => {
-    assert.deepEqual(parseModelReference("openrouter/vendor/model"), {
-      provider: "openrouter",
-      modelId: "vendor/model",
-    });
-    assert.equal(parseModelReference("invalid"), undefined);
-
+  test("normalizes invalid fields and tracks explicit thinking configuration", () => {
     const config = normalizeConfig({
       enabled: false,
       refreshTurns: -1,
@@ -81,6 +75,8 @@ describe("configuration and title normalization", () => {
     assert.equal(config.maxTokens, 80);
     assert.equal(config.maxLength, 30);
     assert.equal(config.thinkingLevel, "minimal");
+    assert.equal(config.thinkingLevelExplicit, false);
+    assert.equal(normalizeConfig({ thinkingLevel: "high" }).thinkingLevelExplicit, true);
     assert.deepEqual(config.terminalTitle, { enabled: false, template: "{title} @ {cwd}" });
   });
 
@@ -243,6 +239,76 @@ describe("model selection and completion", () => {
     assert.equal(options.maxTokens, 55);
     assert.equal(options.reasoning, "low");
   });
+
+  test("resolves roles and applies explicit, role, then default thinking priority", async () => {
+    const reasons: string[] = [];
+    const context: TitleCompletionContext = {
+      model: currentModel,
+      modelRegistry: {
+        find: (provider, modelId) => provider === configuredModel.provider && modelId === configuredModel.id
+          ? configuredModel
+          : undefined,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key" }),
+      },
+    };
+    const modelRoles = normalizeModelRoles({ roles: { title: "openrouter/vendor/model:max", plain: "openrouter/vendor/model" } });
+    const run = async (config: SessionTitleConfig) => requestTitle(
+      { kind: "initial", messages: [{ role: "user", text: "Fix auth" }] },
+      context,
+      config,
+      undefined,
+      {
+        modelRoles,
+        complete: async (_model, _request, options) => {
+          reasons.push(options?.reasoning as string);
+          return response("Auth fix");
+        },
+      },
+    );
+
+    const explicit = await run(defaultConfig({
+      model: "@title",
+      thinkingLevel: "high",
+      thinkingLevelExplicit: true,
+    }));
+    const role = await run(defaultConfig({ model: "@title" }));
+    const fallback = await run(defaultConfig({ model: "@plain" }));
+
+    assert.deepEqual(reasons, ["high", "max", "minimal"]);
+    assert.equal(explicit.kind !== "failed" && explicit.thinkingLevel, "high");
+    assert.equal(role.kind !== "failed" && role.thinkingLevel, "max");
+    assert.equal(fallback.kind !== "failed" && fallback.thinkingLevel, "minimal");
+  });
+
+  test("falls back for unknown or unavailable roles and preserves the role request", async () => {
+    const modelRoles = normalizeModelRoles({
+      roles: { denied: "openrouter/vendor/model" },
+    });
+    const context: TitleCompletionContext = {
+      model: currentModel,
+      modelRegistry: {
+        find: (provider, modelId) => provider === configuredModel.provider && modelId === configuredModel.id
+          ? configuredModel
+          : undefined,
+        getApiKeyAndHeaders: async (model) => model === configuredModel
+          ? { ok: false }
+          : { ok: true, apiKey: "current" },
+      },
+    };
+    for (const requested of ["@missing", "@denied"]) {
+      const result = await requestTitle(
+        { kind: "initial", messages: [{ role: "user", text: "Fix auth" }] },
+        context,
+        defaultConfig({ model: requested }),
+        undefined,
+        { modelRoles, complete: async () => response("Auth fix") },
+      );
+      assert.equal(result.kind, "title");
+      assert.equal(result.configuredModelFailed, true);
+      assert.equal(result.requestedModel, requested);
+      assert.equal(result.model, "test/current");
+    }
+  });
 });
 
 describe("Herdr metadata reporting", () => {
@@ -358,7 +424,7 @@ describe("extension lifecycle and race protection", () => {
     register(
       pi,
       defaultConfig({ ...configOverrides, herdr: { enabled: false } }),
-      { title: { complete: completeTitle } },
+      { title: { complete: completeTitle, modelRoles: normalizeModelRoles({ roles: {} }) } },
     );
     return {
       handlers,
@@ -425,6 +491,32 @@ describe("extension lifecycle and race protection", () => {
     assert.equal(harness.getConfirmCalls(), 1);
     assert.equal(harness.getName(), "Generated replacement");
     assert.equal(harness.appended.at(-1)?.data.status, "generated");
+    assert.deepEqual(harness.notifications.slice(-2), [
+      "Generating session title...",
+      "Session title updated: Generated replacement",
+    ]);
+  });
+
+  test("the manual command reports when the current title remains accurate", async () => {
+    let calls = 0;
+    const harness = createHarness(async () => response(calls++ === 0 ? "Auth fix" : "KEEP"));
+    await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.context);
+    await harness.command("");
+    await harness.command("");
+
+    assert.deepEqual(harness.notifications.slice(-2), [
+      "Generating session title...",
+      "Session title is already up to date.",
+    ]);
+  });
+
+  test("the manual command reports when no conversation is available", async () => {
+    const harness = createHarness(async () => response("Unexpected title"));
+    harness.entries.splice(0, harness.entries.length);
+    await harness.command("");
+
+    assert.equal(harness.getName(), undefined);
+    assert.deepEqual(harness.notifications, ["No conversation is available to generate a session title."]);
   });
 
   test("the disabled manual command preserves title ownership", async () => {
@@ -441,6 +533,16 @@ describe("extension lifecycle and race protection", () => {
     assert.equal(calls, 0);
     assert.equal(harness.getName(), "manual-title");
     assert.equal(harness.appended.length, entriesBefore);
+  });
+
+  test("status reports a role request, final model, thinking, and current-model fallback", async () => {
+    const harness = createHarness(async () => response("Auth fix"), { model: "@missing" });
+    await harness.command("status");
+    const status = harness.notifications.at(-1) ?? "";
+    assert.match(status, /requested=@missing/);
+    assert.match(status, /resolved=test\/current/);
+    assert.match(status, /thinking=minimal/);
+    assert.match(status, /fallback=current Pi model/);
   });
 
   test("a request from a replaced session cannot rename the new session", async () => {

@@ -1,5 +1,14 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  isResolvedModelTarget,
+  loadModelRoles,
+  resolveModelTarget,
+  type ModelAuth,
+  type ModelRegistryLike,
+  type ModelRolesConfig,
+  type ThinkingLevel,
+} from "@oipsanthony/pi-model-roles";
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -48,22 +57,7 @@ export interface TranslationSession {
   pair?: TranslationPair;
 }
 
-export interface ModelReference {
-  provider: string;
-  modelId: string;
-}
-
-export interface TranslationAuth {
-  ok: boolean;
-  apiKey?: string;
-  headers?: Record<string, string>;
-  env?: Record<string, string>;
-}
-
-export interface TranslationModelRegistry {
-  find(provider: string, modelId: string): TranslationModel | undefined;
-  getApiKeyAndHeaders(model: TranslationModel): Promise<TranslationAuth>;
-}
+export interface TranslationModelRegistry extends ModelRegistryLike<TranslationModel> {}
 
 export interface TranslationUi {
   getEditorText(): string;
@@ -84,11 +78,12 @@ export interface TranslationDependencies {
     options: CompletionOptions,
   ): Promise<CompletionResponse>;
   createCache(config: TranslationCacheConfig): TranslationCache;
+  modelRoles?: ModelRolesConfig;
 }
 
 interface ResolvedTranslationModel {
   model: TranslationModel;
-  auth: TranslationAuth;
+  auth: ModelAuth & { ok: true };
 }
 
 interface TranslationPair {
@@ -110,6 +105,7 @@ interface CacheSourceRow {
 
 export interface TranslationResolution {
   target?: ResolvedTranslationModel;
+  thinkingLevel?: ThinkingLevel;
   configuredModelFailed: boolean;
 }
 
@@ -178,17 +174,6 @@ export function loadConfig(path = CONFIG_PATH): TranslatorConfig {
   } catch {
     return normalizeConfig(undefined);
   }
-}
-
-export function parseModelReference(value: string | undefined): ModelReference | undefined {
-  if (!value) return undefined;
-
-  const separator = value.indexOf("/");
-  if (separator <= 0 || separator === value.length - 1) return undefined;
-
-  const provider = value.slice(0, separator).trim();
-  const modelId = value.slice(separator + 1).trim();
-  return provider && modelId ? { provider, modelId } : undefined;
 }
 
 export function shouldTranslateEditorText(draft: string): boolean {
@@ -331,38 +316,22 @@ export async function resolveTranslationModel(
   configuredModel: string | undefined,
   currentModel: TranslationModel | undefined,
   registry: TranslationModelRegistry,
+  modelRoles: ModelRolesConfig = loadModelRoles(),
 ): Promise<TranslationResolution> {
-  const configuredReference = parseModelReference(configuredModel);
-  let configuredModelFailed = Boolean(configuredModel && !configuredReference);
-  const candidates: Array<{ model: TranslationModel; configured: boolean }> = [];
-
-  if (configuredReference) {
-    const configured = registry.find(configuredReference.provider, configuredReference.modelId);
-    if (configured) {
-      candidates.push({ model: configured, configured: true });
-    } else {
-      configuredModelFailed = true;
-    }
+  const resolution = await resolveModelTarget({
+    target: configuredModel,
+    currentModel,
+    modelRegistry: registry,
+    config: modelRoles,
+  });
+  if (!isResolvedModelTarget(resolution)) {
+    return { configuredModelFailed: Boolean(configuredModel) };
   }
-
-  if (currentModel && !candidates.some((candidate) => candidate.model === currentModel)) {
-    candidates.push({ model: currentModel, configured: false });
-  }
-
-  for (const candidate of candidates) {
-    try {
-      const auth = await registry.getApiKeyAndHeaders(candidate.model);
-      if (auth.ok && auth.apiKey) {
-        return { target: { model: candidate.model, auth }, configuredModelFailed };
-      }
-    } catch {
-      // Treat registry errors as unavailable authentication and keep the original draft.
-    }
-
-    if (candidate.configured) configuredModelFailed = true;
-  }
-
-  return { configuredModelFailed };
+  return {
+    target: { model: resolution.model, auth: resolution.auth },
+    ...(resolution.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
+    configuredModelFailed: Boolean(configuredModel && resolution.fallback),
+  };
 }
 
 function textFromResponse(response: CompletionResponse): string {
@@ -379,7 +348,12 @@ async function requestTranslation(
   context: TranslationContext,
   dependencies: TranslationDependencies,
 ): Promise<TranslationResult> {
-  const resolution = await resolveTranslationModel(configuredModel, context.model, context.modelRegistry);
+  const resolution = await resolveTranslationModel(
+    configuredModel,
+    context.model,
+    context.modelRegistry,
+    dependencies.modelRoles,
+  );
   if (!resolution.target) {
     return { kind: "unavailable", configuredModelFailed: resolution.configuredModelFailed };
   }
@@ -395,9 +369,10 @@ async function requestTranslation(
       resolution.target.model,
       { systemPrompt: TRANSLATION_SYSTEM_PROMPT, messages: [message] },
       {
-        apiKey: resolution.target.auth.apiKey!,
+        apiKey: resolution.target.auth.apiKey,
         headers: resolution.target.auth.headers,
         env: resolution.target.auth.env,
+        ...(resolution.thinkingLevel ? { reasoning: resolution.thinkingLevel } : {}),
       } as CompletionOptions,
     );
 

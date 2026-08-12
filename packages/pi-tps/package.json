@@ -1,45 +1,46 @@
 {
-  "name": "@oipsanthony/pi-prompt-translator",
+  "name": "@oipsanthony/pi-tps",
   "version": "0.1.0",
-  "description": "Translate Chinese Pi editor drafts to English on demand before submission.",
+  "description": "Measure request, prompt, and session token throughput and latency in Pi and OMP.",
   "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/OiAnthony/pi-packages.git",
-    "directory": "packages/pi-prompt-translator"
+    "directory": "packages/pi-tps"
   },
   "bugs": {
     "url": "https://github.com/OiAnthony/pi-packages/issues"
   },
-  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-prompt-translator#readme",
+  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-tps#readme",
   "author": "Anthony",
   "license": "MIT",
   "keywords": [
     "pi-package",
-    "prompt",
-    "translator",
-    "translation",
-    "chinese"
+    "tokens",
+    "tps",
+    "ttft",
+    "latency",
+    "metrics"
   ],
   "files": [
     "LICENSE",
+    "NOTICE",
+    "README.md",
+    "extensions/core.ts",
     "extensions/index.ts",
-    "package.json",
-    "README.md"
+    "package.json"
   ],
   "scripts": {
-    "test": "bun test extensions",
+    "test": "bun test extensions/index.test.ts",
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@oipsanthony/pi-model-roles": "workspace:*"
-  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "pi": {
     "extensions": [
@@ -52,6 +53,9 @@
     ]
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-tui": "0.83.0",
     "@types/bun": "1.3.14"
   }
 }
