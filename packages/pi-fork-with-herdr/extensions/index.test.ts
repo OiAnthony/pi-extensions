@@ -305,30 +305,61 @@ describe("extension command", () => {
     mode?: string;
     environment?: NodeJS.ProcessEnv;
     sessionFile?: string;
+    sessionId?: string;
     fileExists?: boolean;
     leafId?: string | null;
+    selectedAction?: string;
+    selectedTreeEntry?: string;
+    selectedEntry?: any;
     waitForIdle?: () => Promise<void>;
     createSession?: (request: ForkRequest) => string;
   } = {}) {
     let command: ((args: string, ctx: any) => Promise<void>) | undefined;
+    const handlers = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
     const notifications: Array<{ message: string; level: string }> = [];
+    const selections: Array<{ title: string; options: string[] }> = [];
     let createCalls = 0;
+    let navigateCalls = 0;
+    let sessionId = options.sessionId ?? "session-1";
     let leafId = options.leafId === undefined ? "live-leaf" : options.leafId;
     const context = {
       mode: options.mode ?? "tui",
       cwd: "/tmp/project",
       waitForIdle: options.waitForIdle ?? (async () => {}),
+      navigateTree: async () => {
+        navigateCalls++;
+        return { cancelled: false };
+      },
       sessionManager: {
+        getSessionId: () => sessionId,
         getSessionFile: () => options.sessionFile === undefined ? "/tmp/source.jsonl" : options.sessionFile,
         getSessionDir: () => "/tmp/sessions",
         getLeafId: () => leafId,
+        getEntry: (entryId: string) => options.selectedEntry ?? {
+          type: "message",
+          id: entryId,
+          parentId: "selected-parent",
+          message: { role: "assistant" },
+        },
+        getTree: () => [{ entry: { id: "tree-entry" }, children: [] }],
       },
-      ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+      ui: {
+        notify: (message: string, level: string) => notifications.push({ message, level }),
+        select: async (title: string, choices: string[]) => {
+          selections.push({ title, options: choices });
+          return options.selectedAction ?? "Fork active branch now";
+        },
+        custom: async () => options.selectedTreeEntry,
+      },
     };
     const pi = {
       registerCommand: (_name: string, definition: { handler: (args: string, ctx: any) => Promise<void> }) => {
         command = definition.handler;
       },
+      on: (name: string, handler: (event: any, ctx: any) => Promise<void> | void) => {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      setLabel: () => {},
       exec: async () => { throw new Error("unexpected CLI call"); },
     } as unknown as ExtensionAPI;
     register(pi, {
@@ -351,9 +382,15 @@ describe("extension command", () => {
     return {
       context,
       notifications,
+      selections,
       run: async () => command?.("", context),
+      emit: async (name: string, event: any = {}) => {
+        for (const handler of handlers.get(name) ?? []) await handler(event, context);
+      },
       createCalls: () => createCalls,
+      navigateCalls: () => navigateCalls,
       setLeafId: (value: string | null) => { leafId = value; },
+      setSessionId: (value: string) => { sessionId = value; },
     };
   }
 
@@ -389,6 +426,75 @@ describe("extension command", () => {
     await noPath.run();
     assert.equal(noPath.createCalls(), 0);
     assert.match(noPath.notifications[0]?.message ?? "", /not been persisted/);
+  });
+
+  test("forks the selected branch without navigating the source session", async () => {
+    let captured: ForkRequest | undefined;
+    const harness = createHarness({
+      selectedAction: "Fork next /tree selection",
+      selectedTreeEntry: "selected-entry",
+      leafId: "source-leaf",
+      createSession: (received) => {
+        captured = received;
+        return "/tmp/derived.jsonl";
+      },
+    });
+
+    await harness.run();
+    assert.deepEqual(harness.selections, [{
+      title: "Fork with Herdr",
+      options: ["Fork active branch now", "Fork next /tree selection"],
+    }]);
+    assert.equal(captured?.leafId, "selected-entry");
+    assert.equal(harness.context.sessionManager.getLeafId(), "source-leaf");
+    assert.equal(harness.navigateCalls(), 0);
+    assert.equal(harness.createCalls(), 1);
+  });
+
+  test("forks before a selected user message without navigating the source session", async () => {
+    let captured: ForkRequest | undefined;
+    const harness = createHarness({
+      selectedAction: "Fork next /tree selection",
+      selectedTreeEntry: "selected-user",
+      selectedEntry: {
+        type: "message",
+        id: "selected-user",
+        parentId: "user-parent",
+        message: { role: "user" },
+      },
+      createSession: (received) => {
+        captured = received;
+        return "/tmp/derived.jsonl";
+      },
+    });
+    await harness.run();
+    assert.equal(captured?.leafId, "user-parent");
+    assert.equal(harness.navigateCalls(), 0);
+  });
+
+  test("does not fork when tree selection is cancelled", async () => {
+    const harness = createHarness({
+      selectedAction: "Fork next /tree selection",
+      selectedTreeEntry: undefined,
+    });
+    await harness.run();
+    assert.equal(harness.createCalls(), 0);
+  });
+
+  test("does not fork an empty root selection", async () => {
+    const harness = createHarness({
+      selectedAction: "Fork next /tree selection",
+      selectedTreeEntry: "root-user",
+      selectedEntry: {
+        type: "message",
+        id: "root-user",
+        parentId: null,
+        message: { role: "user" },
+      },
+    });
+    await harness.run();
+    assert.equal(harness.createCalls(), 0);
+    assert.match(harness.notifications.at(-1)?.message ?? "", /empty conversation/);
   });
 
   test("waits for idle before capturing the live active leaf", async () => {
@@ -430,6 +536,7 @@ describe("extension command", () => {
         registerCommand: (_name: string, definition: { handler: (args: string, ctx: any) => Promise<void> }) => {
           command = definition.handler;
         },
+        on: () => {},
         exec: async () => { throw new Error("unexpected CLI call"); },
       } as unknown as ExtensionAPI;
       register(pi, {
@@ -446,7 +553,10 @@ describe("extension command", () => {
         cwd: "/tmp/project",
         waitForIdle: async () => {},
         sessionManager: source,
-        ui: { notify: () => {} },
+        ui: {
+          notify: () => {},
+          select: async () => "Fork active branch now",
+        },
       });
 
       assert.ok(derivedFile);
