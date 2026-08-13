@@ -1,5 +1,12 @@
 # @oipsanthony/pi-prompt-translator
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [d3604c3]
+  - @oipsanthony/pi-model-roles@0.1.3
+
 ## 0.2.2
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @oipsanthony/pi-tps
 
+## 0.1.5
+
+### Patch Changes
+
+- d3604c3: 对不可靠的吞吐量样本做门控，避免把短流或不完整测量报为可用 TPS。
+
 ## 0.1.4
 
 ### Patch Changes

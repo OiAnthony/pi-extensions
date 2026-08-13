@@ -1,5 +1,13 @@
 # @oipsanthony/pi-session-title
 
+## 0.3.3
+
+### Patch Changes
+
+- d3604c3: 将默认标题生成超时从 5 秒提高到 30 秒。
+- Updated dependencies [d3604c3]
+  - @oipsanthony/pi-model-roles@0.1.3
+
 ## 0.3.2
 
 ### Patch Changes
