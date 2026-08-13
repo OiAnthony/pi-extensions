@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-session-title",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Generate and synchronize concise Pi session titles after completed conversations.",
   "type": "module",
   "repository": {

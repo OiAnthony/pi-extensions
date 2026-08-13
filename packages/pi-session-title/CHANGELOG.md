@@ -1,5 +1,13 @@
 # @oipsanthony/pi-session-title
 
+## 0.3.2
+
+### Patch Changes
+
+- f8a5343: 精简并重写面向用户的安装、使用、配置和限制说明。
+- Updated dependencies [f8a5343]
+  - @oipsanthony/pi-model-roles@0.1.2
+
 ## 0.3.1
 
 ### Patch Changes
