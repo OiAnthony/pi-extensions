@@ -28,7 +28,7 @@ pi install npm:@oipsanthony/pi-session-title
   "enabled": true,
   "model": "@tiny",
   "thinkingLevel": "minimal",
-  "timeoutMs": 5000,
+  "timeoutMs": 30000,
   "maxTokens": 40,
   "maxLength": 48,
   "refreshTurns": 4,
