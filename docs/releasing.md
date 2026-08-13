@@ -43,7 +43,7 @@ bun run changeset
 
 ## 安全
 
-每个公开 npm package 都要为 `OiAnthony/pi-packages` 的 `.github/workflows/release.yml` 配置 npm Trusted Publisher。workflow 运行在 GitHub-hosted runner，并拥有 `id-token: write` 权限，因此 npm 会将 GitHub Actions 的 OIDC token 交换为短期发布凭据。
+每个公开 npm package 都要为 `OiAnthony/pi-extensions` 的 `.github/workflows/release.yml` 配置 npm Trusted Publisher。workflow 运行在 GitHub-hosted runner，并拥有 `id-token: write` 权限，因此 npm 会将 GitHub Actions 的 OIDC token 交换为短期发布凭据。
 
 不要向 GitHub secrets 添加 `NPM_TOKEN`。完成 Trusted Publisher 配置后，在 npm 中为每个 package 启用 `Require 2FA and disallow tokens`。这样常规发布只能来自经过审核的 GitHub workflow。
 
@@ -55,7 +55,7 @@ npm 要求 package 已经存在，才能配置 Trusted Publisher。因此新增�
 
 1. 准备并审核 package PR，包括 scoped name、公开 `publishConfig`、repository metadata、测试和发布文件。
 2. 在该 PR 合并前，使用已认证的 npm maintainer 终端发布初始版本，并完成 npm 2FA。
-3. 使用 `npm trust github` 将该 package 的发布权限绑定到 `OiAnthony/pi-packages` 的 `release.yml`。
+3. 使用 `npm trust github` 将该 package 的发布权限绑定到 `OiAnthony/pi-extensions` 的 `release.yml`。
 4. 在 npm package 设置中启用 `Require 2FA and disallow tokens`。
 5. 合并初始 package PR。之后所有版本都走常规 Changeset 流程。
 
@@ -66,7 +66,7 @@ npm 要求 package 已经存在，才能配置 Trusted Publisher。因此新增�
 只在发布失败或中断时手动运行 release workflow：
 
 ```bash
-gh workflow run Release --repo OiAnthony/pi-packages
+gh workflow run Release --repo OiAnthony/pi-extensions
 ```
 
 重试前先检查 npm 中的 package 版本和对应 GitHub Release。npm 版本不可覆盖，必须先定位失败原因，再决定是否创建新版本。

@@ -36,13 +36,13 @@ packages/pi-example/
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OiAnthony/pi-packages.git",
+    "url": "git+https://github.com/OiAnthony/pi-extensions.git",
     "directory": "packages/pi-example"
   },
   "bugs": {
-    "url": "https://github.com/OiAnthony/pi-packages/issues"
+    "url": "https://github.com/OiAnthony/pi-extensions/issues"
   },
-  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-example#readme",
+  "homepage": "https://github.com/OiAnthony/pi-extensions/tree/main/packages/pi-example#readme",
   "license": "MIT",
   "keywords": [
     "pi-package"
@@ -165,7 +165,7 @@ npm 要求 package 已存在后才能配置 Trusted Publisher，因此新 packag
 
    ```bash
    npm trust github @oipsanthony/pi-example \
-     --repo OiAnthony/pi-packages \
+     --repo OiAnthony/pi-extensions \
      --file release.yml \
      --allow-publish
    ```
@@ -182,7 +182,7 @@ bootstrap 后合并是安全的，因为 npm 已包含初始版本。后续版�
 需要恢复时可手动运行 release workflow：
 
 ```bash
-gh workflow run Release --repo OiAnthony/pi-packages
+gh workflow run Release --repo OiAnthony/pi-extensions
 ```
 
 该 workflow 由当前状态决定行为，可能创建版本 PR 或发布待处理版本。只有在明确 npm 和 Changeset 当前状态后才运行。

@@ -4,7 +4,7 @@ Folder-based persistent command history for [pi](https://github.com/badlogic/pi-
 
 ## Fork provenance
 
-This package is maintained as part of [OiAnthony/pi-packages](https://github.com/OiAnthony/pi-packages) and originates from a fork of [ross-jill-ws/pi-command-history](https://github.com/ross-jill-ws/pi-command-history) by [Ross Z](https://github.com/ross-jill-ws). Subsequent changes are maintained in this repository.
+This package is maintained as part of [OiAnthony/pi-extensions](https://github.com/OiAnthony/pi-extensions) and originates from a fork of [ross-jill-ws/pi-command-history](https://github.com/ross-jill-ws/pi-command-history) by [Ross Z](https://github.com/ross-jill-ws). Subsequent changes are maintained in this repository.
 
 ## Install
 
