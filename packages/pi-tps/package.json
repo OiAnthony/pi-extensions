@@ -5,13 +5,13 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OiAnthony/pi-packages.git",
+    "url": "git+https://github.com/OiAnthony/pi-extensions.git",
     "directory": "packages/pi-tps"
   },
   "bugs": {
-    "url": "https://github.com/OiAnthony/pi-packages/issues"
+    "url": "https://github.com/OiAnthony/pi-extensions/issues"
   },
-  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-tps#readme",
+  "homepage": "https://github.com/OiAnthony/pi-extensions/tree/main/packages/pi-tps#readme",
   "author": "Anthony",
   "license": "MIT",
   "keywords": [

@@ -8,13 +8,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OiAnthony/pi-packages.git",
+    "url": "git+https://github.com/OiAnthony/pi-extensions.git",
     "directory": "packages/pi-model-roles"
   },
   "bugs": {
-    "url": "https://github.com/OiAnthony/pi-packages/issues"
+    "url": "https://github.com/OiAnthony/pi-extensions/issues"
   },
-  "homepage": "https://github.com/OiAnthony/pi-packages/tree/main/packages/pi-model-roles#readme",
+  "homepage": "https://github.com/OiAnthony/pi-extensions/tree/main/packages/pi-model-roles#readme",
   "author": "Anthony",
   "license": "MIT",
   "keywords": ["pi-package", "model-roles", "model-selection"],

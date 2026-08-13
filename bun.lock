@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "pi-packages",
+      "name": "pi-extensions",
       "devDependencies": {
         "@changesets/cli": "^2.31.1",
         "@types/node": "^26.1.1",
