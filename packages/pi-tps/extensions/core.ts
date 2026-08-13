@@ -9,9 +9,11 @@ interface SessionManagerView {
   getBranch(): Array<{ type: string; customType?: string; data?: unknown }>;
 }
 
-export const REQUEST_ENTRY_TYPE = "pi-tps/request/v1";
-export const PROMPT_ENTRY_TYPE = "pi-tps/prompt/v1";
+export const REQUEST_ENTRY_TYPE = "pi-tps/request/v2";
+export const PROMPT_ENTRY_TYPE = "pi-tps/prompt/v2";
 export const PROMPT_DISPLAY_MESSAGE_TYPE = "pi-tps/prompt-display/v1";
+const LEGACY_REQUEST_ENTRY_TYPE = "pi-tps/request/v1";
+const LEGACY_PROMPT_ENTRY_TYPE = "pi-tps/prompt/v1";
 
 export interface PromptDisplayData {
   version: 1;
@@ -34,8 +36,31 @@ export interface TokenUsage {
   };
 }
 
+export type TpsBranch = "primary" | "fallback" | "unavailable";
+export type TpsUnavailableReason =
+  | "no-output"
+  | "insufficient-updates"
+  | "insufficient-duration"
+  | "implausible-rate";
+
+export interface TpsMeasurementInput {
+  outputTokens: number;
+  generationMs: number | null;
+  streamMs: number | null;
+  postFirstUpdateCount: number;
+  stallMs: number;
+  forceFallback?: boolean;
+}
+
+export interface TpsMeasurement {
+  tps: number | null;
+  effectiveMs: number | null;
+  branch: TpsBranch;
+  unavailableReason?: TpsUnavailableReason;
+}
+
 export interface RequestMetrics {
-  version: 1;
+  version: 1 | 2;
   id: string;
   promptId: string;
   sequence: number;
@@ -49,6 +74,11 @@ export interface RequestMetrics {
   headersMs: number | null;
   ttftMs: number | null;
   generationMs: number | null;
+  streamMs?: number | null;
+  postFirstUpdateCount?: number;
+  effectiveGenerationMs?: number | null;
+  tpsBranch?: TpsBranch;
+  tpsUnavailableReason?: TpsUnavailableReason;
   stallMs: number;
   stallCount: number;
   totalMs: number;
@@ -58,7 +88,7 @@ export interface RequestMetrics {
 }
 
 export interface PromptMetrics {
-  version: 1;
+  version: 1 | 2;
   id: string;
   startedAt: number;
   completedAt: number;
@@ -72,6 +102,9 @@ export interface PromptMetrics {
   ttftMs: number | null;
   activeTps: number | null;
   effectiveTps: number | null;
+  effectiveGenerationMs?: number | null;
+  tpsBranch?: TpsBranch;
+  tpsUnavailableReason?: TpsUnavailableReason;
   status: "completed" | "error" | "aborted";
 }
 
@@ -145,27 +178,67 @@ export function rate(tokens: number, durationMs: number): number | null {
 }
 
 /**
- * Generation TPS net of inference stalls, following the original pi-tps
- * fallback branch: subtract known stalls from the generation window, but
- * never overshoot when stalls dominate (partially discount them instead),
- * and reject implausibly fast rates as measurement artifacts.
+ * Measure generation TPS using a reliable streaming window when available,
+ * then fall back to the full generation window. Unidentifiable or implausible
+ * measurements return null instead of reporting a misleading rate.
  */
-export function rateAfterStall(tokens: number, generationMs: number | null, stallMs: number): number | null {
-  if (tokens <= 0) return null;
-  if (generationMs === null || generationMs <= 0) return null;
-  // stallMs ≤ generationMs is guaranteed by the event layer (gaps are measured
-  // between deltas inside the first-delta → message-end window), so no clamp.
-  const stall = Math.max(stallMs, 0);
+export function measureTps(input: TpsMeasurementInput): TpsMeasurement {
+  const { outputTokens, generationMs, streamMs, postFirstUpdateCount, forceFallback = false } = input;
+  if (outputTokens <= 0) {
+    return { tps: null, effectiveMs: null, branch: "unavailable", unavailableReason: "no-output" };
+  }
+
+  const stallMs = Math.max(input.stallMs, 0);
+  const MIN_STREAM_UPDATES = 5;
+  const MIN_INTER_CHUNK_MS = 1;
   const MIN_GENERATION_MS = 200;
   const STALL_DOMINANCE_RATIO = 0.85;
   const STALL_REDUCTION_DENOM = 2;
   const MAX_PLAUSIBLE_TPS = 10_000;
-  const activeMs = generationMs - stall;
-  const effectiveMs = activeMs < MIN_GENERATION_MS || stall > generationMs * STALL_DOMINANCE_RATIO
-    ? Math.max(generationMs - stall / STALL_REDUCTION_DENOM, MIN_GENERATION_MS)
-    : Math.max(activeMs, MIN_GENERATION_MS);
-  const tps = tokens / (effectiveMs / 1000);
-  return tps > MAX_PLAUSIBLE_TPS ? null : tps;
+  const averageGapMs = streamMs !== null && postFirstUpdateCount > 0
+    ? streamMs / postFirstUpdateCount
+    : 0;
+
+  let effectiveMs: number;
+  let branch: Exclude<TpsBranch, "unavailable">;
+  if (!forceFallback
+    && streamMs !== null
+    && postFirstUpdateCount >= MIN_STREAM_UPDATES
+    && averageGapMs >= MIN_INTER_CHUNK_MS
+    && streamMs - stallMs >= MIN_GENERATION_MS
+    && stallMs < streamMs - stallMs) {
+    effectiveMs = streamMs - stallMs;
+    branch = "primary";
+  } else if (generationMs !== null
+    && generationMs >= MIN_GENERATION_MS
+    && postFirstUpdateCount >= 2) {
+    const activeMs = generationMs - stallMs;
+    effectiveMs = activeMs < MIN_GENERATION_MS || stallMs > generationMs * STALL_DOMINANCE_RATIO
+      ? Math.max(generationMs - stallMs / STALL_REDUCTION_DENOM, MIN_GENERATION_MS)
+      : Math.max(activeMs, MIN_GENERATION_MS);
+    branch = "fallback";
+  } else {
+    const unavailableReason = postFirstUpdateCount < 2 ? "insufficient-updates" : "insufficient-duration";
+    return { tps: null, effectiveMs: null, branch: "unavailable", unavailableReason };
+  }
+
+  const tps = outputTokens / (effectiveMs / 1000);
+  if (tps > MAX_PLAUSIBLE_TPS) {
+    return { tps: null, effectiveMs: null, branch: "unavailable", unavailableReason: "implausible-rate" };
+  }
+  return { tps, effectiveMs, branch };
+}
+
+/** @deprecated Use measureTps() with stream reliability data. */
+export function rateAfterStall(tokens: number, generationMs: number | null, stallMs: number): number | null {
+  return measureTps({
+    outputTokens: tokens,
+    generationMs,
+    streamMs: null,
+    postFirstUpdateCount: 2,
+    stallMs,
+    forceFallback: true,
+  }).tps;
 }
 
 export function percentile(values: number[], quantile: number): number | null {
@@ -189,13 +262,33 @@ export function aggregatePrompt(
   const modelMs = requests.reduce((total, request) => total + request.totalMs, 0);
   const first = requests[0];
   const last = requests.at(-1);
+  const outputRequests = requests.filter((request) => request.usage.output > 0);
+  const allMeasurable = outputRequests.length > 0
+    && outputRequests.every((request) => request.outputTps !== null && request.effectiveGenerationMs != null);
+  const effectiveMs = allMeasurable
+    ? outputRequests.reduce((total, request) => total + (request.effectiveGenerationMs ?? 0), 0)
+    : null;
+  const hasFallback = outputRequests.some((request) => request.tpsBranch === "fallback");
+  const unavailableRequest = outputRequests.find((request) => request.tpsBranch === "unavailable");
+  const measurement: TpsMeasurement = effectiveMs === null
+    ? {
+        tps: null,
+        effectiveMs: null,
+        branch: "unavailable",
+        unavailableReason: unavailableRequest?.tpsUnavailableReason ?? "insufficient-updates",
+      }
+    : {
+        tps: rate(usage.output, effectiveMs),
+        effectiveMs,
+        branch: hasFallback ? "fallback" : "primary",
+      };
   const status = last?.stopReason === "aborted"
     ? "aborted"
     : last?.stopReason === "error"
       ? "error"
       : "completed";
   return {
-    version: 1,
+    version: 2,
     id,
     startedAt,
     completedAt,
@@ -207,8 +300,11 @@ export function aggregatePrompt(
     stallMs,
     stallCount,
     ttftMs: first?.ttftMs ?? null,
-    activeTps: rate(usage.output, Math.max(generationMs - stallMs, 0)),
+    activeTps: measurement.tps,
     effectiveTps: rate(usage.output, durationMs),
+    effectiveGenerationMs: measurement.effectiveMs,
+    tpsBranch: measurement.branch,
+    ...(measurement.unavailableReason === undefined ? {} : { tpsUnavailableReason: measurement.unavailableReason }),
     status,
   };
 }
@@ -220,6 +316,12 @@ export function aggregateSession(prompts: PromptMetrics[], requests: RequestMetr
   const generationMs = prompts.reduce((total, prompt) => total + prompt.generationMs, 0);
   const ttfts = prompts.flatMap((prompt) => prompt.ttftMs === null ? [] : [prompt.ttftMs]);
   const requestRates = requests.flatMap((request) => request.outputTps === null ? [] : [request.outputTps]);
+  const outputPrompts = prompts.filter((prompt) => prompt.usage.output > 0);
+  const allMeasurable = outputPrompts.length > 0
+    && outputPrompts.every((prompt) => prompt.activeTps !== null && prompt.effectiveGenerationMs != null);
+  const activeMs = allMeasurable
+    ? outputPrompts.reduce((total, prompt) => total + (prompt.effectiveGenerationMs ?? 0), 0)
+    : 0;
   return {
     promptCount: prompts.length,
     requestCount: requests.length,
@@ -227,7 +329,7 @@ export function aggregateSession(prompts: PromptMetrics[], requests: RequestMetr
     processingMs,
     modelMs,
     generationMs,
-    activeTps: rate(usage.output, generationMs),
+    activeTps: allMeasurable ? rate(usage.output, activeMs) : null,
     effectiveTps: rate(usage.output, processingMs),
     ttftP50Ms: percentile(ttfts, 0.5),
     ttftP95Ms: percentile(ttfts, 0.95),
@@ -255,7 +357,7 @@ function isTokenUsage(value: unknown): value is TokenUsage {
 export function isRequestMetrics(value: unknown): value is RequestMetrics {
   if (!value || typeof value !== "object") return false;
   const request = value as Partial<RequestMetrics>;
-  return request.version === 1
+  const baseValid = (request.version === 1 || request.version === 2)
     && typeof request.id === "string"
     && typeof request.promptId === "string"
     && isFiniteNumber(request.sequence)
@@ -265,12 +367,18 @@ export function isRequestMetrics(value: unknown): value is RequestMetrics {
     && isFiniteNumber(request.stallMs)
     && isFiniteNumber(request.stallCount)
     && isTokenUsage(request.usage);
+  if (!baseValid) return false;
+  if (request.version === 1) return true;
+  return (request.streamMs === null || isFiniteNumber(request.streamMs))
+    && isFiniteNumber(request.postFirstUpdateCount)
+    && (request.effectiveGenerationMs === null || isFiniteNumber(request.effectiveGenerationMs))
+    && (request.tpsBranch === "primary" || request.tpsBranch === "fallback" || request.tpsBranch === "unavailable");
 }
 
 export function isPromptMetrics(value: unknown): value is PromptMetrics {
   if (!value || typeof value !== "object") return false;
   const prompt = value as Partial<PromptMetrics>;
-  return prompt.version === 1
+  const baseValid = (prompt.version === 1 || prompt.version === 2)
     && typeof prompt.id === "string"
     && isFiniteNumber(prompt.startedAt)
     && isFiniteNumber(prompt.completedAt)
@@ -279,6 +387,10 @@ export function isPromptMetrics(value: unknown): value is PromptMetrics {
     && isFiniteNumber(prompt.stallMs)
     && isFiniteNumber(prompt.stallCount)
     && isTokenUsage(prompt.usage);
+  if (!baseValid) return false;
+  if (prompt.version === 1) return true;
+  return (prompt.effectiveGenerationMs === null || isFiniteNumber(prompt.effectiveGenerationMs))
+    && (prompt.tpsBranch === "primary" || prompt.tpsBranch === "fallback" || prompt.tpsBranch === "unavailable");
 }
 
 export function isPromptDisplayData(value: unknown): value is PromptDisplayData {
@@ -295,8 +407,10 @@ export function restoreMetrics(sessionManager: SessionManagerView): RestoredMetr
   const requests: RequestMetrics[] = [];
   for (const entry of sessionManager.getBranch()) {
     if (entry.type !== "custom") continue;
-    if (entry.customType === REQUEST_ENTRY_TYPE && isRequestMetrics(entry.data)) requests.push(entry.data);
-    if (entry.customType === PROMPT_ENTRY_TYPE && isPromptMetrics(entry.data)) prompts.push(entry.data);
+    if ((entry.customType === REQUEST_ENTRY_TYPE || entry.customType === LEGACY_REQUEST_ENTRY_TYPE)
+      && isRequestMetrics(entry.data)) requests.push(entry.data);
+    if ((entry.customType === PROMPT_ENTRY_TYPE || entry.customType === LEGACY_PROMPT_ENTRY_TYPE)
+      && isPromptMetrics(entry.data)) prompts.push(entry.data);
   }
   return { prompts, requests };
 }

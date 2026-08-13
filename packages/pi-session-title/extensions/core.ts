@@ -116,7 +116,7 @@ const DEFAULT_CONFIG: SessionTitleConfig = {
   enabled: true,
   thinkingLevel: "minimal",
   thinkingLevelExplicit: false,
-  timeoutMs: 5_000,
+  timeoutMs: 30_000,
   maxTokens: 40,
   maxLength: 48,
   refreshTurns: 4,

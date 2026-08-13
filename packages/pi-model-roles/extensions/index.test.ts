@@ -9,6 +9,9 @@ import register, {
   ROLE_WIDGET_PADDING_X,
   nextRoleIndex,
   normalizeModelRoles,
+  packageSourceIdentity,
+  persistModelRolesBeforePowerline,
+  planPackagesBeforePowerline,
   resolveRoleCandidates,
   type RoleExtensionDependencies,
   type ThinkingLevel,
@@ -34,6 +37,10 @@ function createHarness(options: {
   unavailable?: Set<string>;
   setModelResult?: boolean;
   clampThinking?: (level: ThinkingLevel) => ThinkingLevel;
+  projectTrusted?: boolean;
+  settingsFiles?: Map<string, string>;
+  globalSettingsPath?: string;
+  projectSettingsPath?: string;
 } = {}) {
   const roles = options.roles ?? {
     small: "test/small:off",
@@ -52,6 +59,8 @@ function createHarness(options: {
   let renderRequests = 0;
   let thinking = options.initialThinking ?? "off";
   const context: any = {
+    cwd: "/tmp/project",
+    isProjectTrusted: () => options.projectTrusted === true,
     model: options.initialModel ?? small,
     thinkingLevel: thinking,
     modelRegistry: {
@@ -62,8 +71,8 @@ function createHarness(options: {
     },
     ui: {
       theme: {
-        fg: (_color: string, text: string) => text,
-        bold: (text: string) => `**${text}**`,
+        fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+        bold: (text: string) => `<bold>${text}</bold>`,
       },
       notify: (message: string, level: string) => notifications.push({ message, level }),
       setWidget: (id: string, value: unknown, widgetOptions?: { placement?: string }) => {
@@ -83,6 +92,7 @@ function createHarness(options: {
       },
     },
   };
+  const settingsFiles = options.settingsFiles ?? new Map<string, string>();
   const dependencies: RoleExtensionDependencies = {
     setTimer: (callback, delayMs) => {
       assert.equal(delayMs, ROLE_WIDGET_DURATION_MS);
@@ -91,6 +101,14 @@ function createHarness(options: {
       return timer as unknown as ReturnType<typeof setTimeout>;
     },
     clearTimer: (timer) => timers.delete(timer as unknown as object),
+    settingsIO: {
+      readTextFile: (path) => settingsFiles.get(path),
+      writeTextFile: (path, content) => {
+        settingsFiles.set(path, content);
+      },
+    },
+    globalSettingsPath: options.globalSettingsPath ?? "/tmp/global-settings.json",
+    projectSettingsPathFor: () => options.projectSettingsPath ?? "/tmp/project-settings.json",
   };
   const pi = {
     registerShortcut: (shortcut: string, definition: { handler: ShortcutHandler }) => handlers.set(shortcut, definition.handler),
@@ -117,6 +135,7 @@ function createHarness(options: {
     widgets,
     calls,
     timers,
+    settingsFiles,
     getThinking: () => thinking,
     getRenderRequests: () => renderRequests,
     renderWidget: (width = 200) => widgetComponent?.render(width) ?? [],
@@ -193,8 +212,9 @@ describe("model role extension", () => {
     });
     await harness.handlers.get("ctrl+p")?.(harness.context);
     assert.equal(harness.context.model, small);
-    assert.match(harness.renderWidget()[0] ?? "", /Review/);
-    assert.doesNotMatch(harness.renderWidget()[0] ?? "", /ignored/);
+    const track = harness.renderWidget()[0] ?? "";
+    assert.match(track, /Review/);
+    assert.doesNotMatch(track, /ignored/);
   });
 
   test("handles zero and one available candidate", async () => {
@@ -207,10 +227,13 @@ describe("model role extension", () => {
     await single.handlers.get("ctrl+p")?.(single.context);
     assert.equal(single.context.model, normal);
     assert.deepEqual(single.calls, ["model:normal"]);
-    assert.match(single.renderWidget()[0] ?? "", /\*\*\[only\]\*\*/);
+    assert.equal(
+      single.renderWidget()[0],
+      " <accent>\x1b[7m <bold>only</bold> \x1b[27m</accent>",
+    );
   });
 
-  test("sets the model before thinking and displays the clamped final level", async () => {
+  test("sets the model before thinking and omits the clamped final level from the track", async () => {
     const harness = createHarness({
       initialModel: small,
       initialThinking: "off",
@@ -219,7 +242,7 @@ describe("model role extension", () => {
     await harness.handlers.get("ctrl+p")?.(harness.context);
     assert.deepEqual(harness.calls, ["model:normal", "thinking:medium"]);
     assert.equal(harness.getThinking(), "low");
-    assert.match(harness.renderWidget()[0] ?? "", /\(low\)$/);
+    assert.doesNotMatch(harness.renderWidget()[0] ?? "", /\(low\)$/);
   });
 
   test("does not set thinking for a role without a suffix", async () => {
@@ -239,7 +262,7 @@ describe("model role extension", () => {
     assert.equal(harness.notifications.at(-1)?.level, "error");
   });
 
-  test("pre-registers one stable widget above the editor and clears it in place", async () => {
+  test("pre-registers one transient widget and updates it in place", async () => {
     const harness = createHarness({ initialModel: small });
     harness.eventHandlers.get("session_start")?.({}, harness.context);
     assert.deepEqual(harness.widgets, [{
@@ -252,22 +275,24 @@ describe("model role extension", () => {
     await harness.handlers.get("ctrl+p")?.(harness.context);
     const firstTimer = [...harness.timers.keys()][0];
     const firstRenderRequests = harness.getRenderRequests();
-    const renderedLines = harness.renderWidget();
-    const rendered = renderedLines[0] ?? "";
-    assert.equal(renderedLines.length, 1 + ROLE_WIDGET_GAP_LINES);
-    assert.deepEqual(renderedLines.slice(1), Array.from({ length: ROLE_WIDGET_GAP_LINES }, () => ""));
-    assert.ok(rendered.startsWith(" ".repeat(ROLE_WIDGET_PADDING_X)));
-    assert.equal(rendered.startsWith(" ".repeat(ROLE_WIDGET_PADDING_X + 1)), false);
-    assert.match(rendered, /\*\*\[default\]\*\*/);
-    const narrowLines = harness.renderWidget(12);
-    assert.ok(visibleWidth(narrowLines[0] ?? "") <= 12);
+    assert.deepEqual(harness.renderWidget(), [
+      " <accent>small</accent>  <success>\x1b[7m <bold>default</bold> \x1b[27m</success>  <warning>review</warning>",
+      "",
+    ]);
+    const narrowLines = harness.renderWidget(18);
+    assert.ok(visibleWidth(narrowLines[0] ?? "") <= 18);
     assert.deepEqual(narrowLines.slice(1), Array.from({ length: ROLE_WIDGET_GAP_LINES }, () => ""));
+    assert.equal((narrowLines[0] ?? "").startsWith(" ".repeat(ROLE_WIDGET_PADDING_X)), true);
 
     await harness.handlers.get("ctrl+p")?.(harness.context);
     assert.equal(harness.timers.has(firstTimer), false);
     assert.equal(harness.timers.size, 1);
     assert.equal(harness.widgets.length, 1);
     assert.ok(harness.getRenderRequests() > firstRenderRequests);
+    assert.deepEqual(harness.renderWidget(), [
+      " <accent>small</accent> <dim></dim> <success>default</success>  <warning>\x1b[7m <bold>review</bold> \x1b[27m</warning>",
+      "",
+    ]);
 
     harness.runTimer();
     assert.deepEqual(harness.renderWidget(), []);
@@ -280,5 +305,132 @@ describe("model role extension", () => {
     harness.eventHandlers.get("session_shutdown")?.({}, harness.context);
     assert.deepEqual(harness.widgets.at(-1), { id: ROLE_WIDGET_ID, value: undefined });
     assert.equal(harness.timers.size, 0);
+  });
+});
+
+describe("package order persistence", () => {
+  test("identifies npm, scoped, versioned, and local package sources", () => {
+    assert.equal(packageSourceIdentity("npm:@oipsanthony/pi-model-roles@0.1.2"), "pi-model-roles");
+    assert.equal(packageSourceIdentity("../../packages/pi-model-roles"), "pi-model-roles");
+    assert.equal(packageSourceIdentity("npm:pi-powerline-footer"), "pi-powerline-footer");
+    assert.equal(packageSourceIdentity("git:github.com/user/pi-powerline-footer"), "pi-powerline-footer");
+  });
+
+  test("moves model roles immediately before powerline and leaves other entries", () => {
+    assert.deepEqual(
+      planPackagesBeforePowerline([
+        "npm:other",
+        "npm:pi-powerline-footer",
+        "npm:mid",
+        { source: "npm:@oipsanthony/pi-model-roles", extensions: ["extensions/index.ts"] },
+        "npm:last",
+      ]),
+      [
+        "npm:other",
+        { source: "npm:@oipsanthony/pi-model-roles", extensions: ["extensions/index.ts"] },
+        "npm:pi-powerline-footer",
+        "npm:mid",
+        "npm:last",
+      ],
+    );
+  });
+
+  test("does not rewrite an already ordered or incomplete package list", () => {
+    assert.equal(planPackagesBeforePowerline([
+      "../../packages/pi-model-roles",
+      "npm:pi-powerline-footer",
+    ]), undefined);
+    assert.equal(planPackagesBeforePowerline(["npm:pi-powerline-footer"]), undefined);
+    assert.equal(planPackagesBeforePowerline(["npm:@oipsanthony/pi-model-roles"]), undefined);
+  });
+
+  test("rewrites only the settings file that contains both packages", () => {
+    const files = new Map<string, string>([
+      ["/global.json", JSON.stringify({
+        theme: "dark",
+        packages: ["npm:pi-powerline-footer", "npm:@oipsanthony/pi-model-roles"],
+      })],
+      ["/project.json", JSON.stringify({ packages: ["npm:pi-powerline-footer"] })],
+    ]);
+
+    assert.deepEqual(
+      persistModelRolesBeforePowerline(["/global.json", "/project.json"], {
+        readTextFile: (path) => files.get(path),
+        writeTextFile: (path, content) => {
+          files.set(path, content);
+        },
+      }),
+      ["/global.json"],
+    );
+    assert.deepEqual(JSON.parse(files.get("/global.json") ?? "").packages, [
+      "npm:@oipsanthony/pi-model-roles",
+      "npm:pi-powerline-footer",
+    ]);
+    assert.equal(JSON.parse(files.get("/global.json") ?? "").theme, "dark");
+    assert.deepEqual(JSON.parse(files.get("/project.json") ?? "").packages, ["npm:pi-powerline-footer"]);
+  });
+
+  test("persists inverted global packages on session start without reloading", () => {
+    const globalSettingsPath = "/tmp/global-settings.json";
+    const harness = createHarness({
+      globalSettingsPath,
+      settingsFiles: new Map([
+        [globalSettingsPath, JSON.stringify({
+          packages: ["npm:pi-powerline-footer", "../../packages/pi-model-roles"],
+        })],
+      ]),
+    });
+    harness.eventHandlers.get("session_start")?.({}, harness.context);
+    assert.deepEqual(JSON.parse(harness.settingsFiles.get(globalSettingsPath) ?? "").packages, [
+      "../../packages/pi-model-roles",
+      "npm:pi-powerline-footer",
+    ]);
+    assert.equal(harness.widgets.length, 1);
+  });
+
+  test("rewrites trusted project settings that contain both packages", () => {
+    const projectSettingsPath = "/tmp/project-settings.json";
+    const harness = createHarness({
+      projectTrusted: true,
+      projectSettingsPath,
+      settingsFiles: new Map([
+        [projectSettingsPath, JSON.stringify({
+          packages: ["npm:pi-powerline-footer", "npm:@oipsanthony/pi-model-roles"],
+        })],
+      ]),
+    });
+    harness.eventHandlers.get("session_start")?.({}, harness.context);
+    assert.deepEqual(JSON.parse(harness.settingsFiles.get(projectSettingsPath) ?? "").packages, [
+      "npm:@oipsanthony/pi-model-roles",
+      "npm:pi-powerline-footer",
+    ]);
+  });
+
+  test("ignores invalid settings JSON", () => {
+    const files = new Map<string, string>([["/broken.json", "{packages:"]]);
+    assert.deepEqual(
+      persistModelRolesBeforePowerline(["/broken.json"], {
+        readTextFile: (path) => files.get(path),
+        writeTextFile: (path, content) => {
+          files.set(path, content);
+        },
+      }),
+      [],
+    );
+    assert.equal(files.get("/broken.json"), "{packages:");
+  });
+
+  test("does not write untrusted project settings", () => {
+    const projectSettingsPath = "/tmp/project-settings.json";
+    const original = JSON.stringify({
+      packages: ["npm:pi-powerline-footer", "npm:@oipsanthony/pi-model-roles"],
+    });
+    const harness = createHarness({
+      projectTrusted: false,
+      projectSettingsPath,
+      settingsFiles: new Map([[projectSettingsPath, original]]),
+    });
+    harness.eventHandlers.get("session_start")?.({}, harness.context);
+    assert.equal(harness.settingsFiles.get(projectSettingsPath), original);
   });
 });

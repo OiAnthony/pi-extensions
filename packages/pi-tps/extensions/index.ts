@@ -14,8 +14,8 @@ import {
   copyUsage,
   emptyUsage,
   isPromptDisplayData,
+  measureTps,
   promptStatus,
-  rateAfterStall,
   renderReport,
   restoreMetrics,
   type PromptDisplayData,
@@ -40,9 +40,12 @@ interface ActiveRequest {
   api?: string;
   startedAt: number;
   startedMono: number;
+  messageStartMono: number;
   headersMono?: number;
   firstDeltaMono?: number;
   lastUpdateMono?: number;
+  lastStreamUpdateMono?: number;
+  postFirstUpdateCount: number;
   stallMs: number;
   stallCount: number;
   inStall: boolean;
@@ -111,12 +114,22 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   ): RequestMetrics => {
     const completedMono = clock.now();
     const completedAt = clock.wallNow();
-    const generationMs = request.firstDeltaMono === undefined || request.messageEndMono === undefined
+    const generationMs = request.messageEndMono === undefined
       ? null
-      : Math.max(0, request.messageEndMono - request.firstDeltaMono);
+      : Math.max(0, request.messageEndMono - request.messageStartMono);
+    const streamMs = request.postFirstUpdateCount > 0 && request.firstDeltaMono !== undefined
+      ? Math.max(0, (request.lastStreamUpdateMono ?? request.firstDeltaMono) - request.firstDeltaMono)
+      : null;
     const usage = message ? copyUsage(message.usage) : emptyUsage();
+    const measurement = measureTps({
+      outputTokens: usage.output,
+      generationMs,
+      streamMs,
+      postFirstUpdateCount: request.postFirstUpdateCount,
+      stallMs: request.stallMs,
+    });
     const metrics: RequestMetrics = {
-      version: 1,
+      version: 2,
       id: request.id,
       promptId: active?.id ?? request.id.split(":")[0] ?? "unknown",
       sequence: request.sequence,
@@ -130,10 +143,17 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       headersMs: request.headersMono === undefined ? null : Math.max(0, request.headersMono - request.startedMono),
       ttftMs: request.firstDeltaMono === undefined ? null : Math.max(0, request.firstDeltaMono - request.startedMono),
       generationMs,
+      streamMs,
+      postFirstUpdateCount: request.postFirstUpdateCount,
+      effectiveGenerationMs: measurement.effectiveMs,
+      tpsBranch: measurement.branch,
+      ...(measurement.unavailableReason === undefined
+        ? {}
+        : { tpsUnavailableReason: measurement.unavailableReason }),
       stallMs: request.stallMs,
       stallCount: request.stallCount,
       totalMs: Math.max(0, completedMono - request.startedMono),
-      outputTps: rateAfterStall(usage.output, generationMs, request.stallMs),
+      outputTps: measurement.tps,
       stopReason: message?.stopReason ?? fallbackStopReason,
       ...(message?.errorMessage ? { error: message.errorMessage } : {}),
     };
@@ -177,6 +197,8 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       api: ctx.model?.api,
       startedAt: clock.wallNow(),
       startedMono: clock.now(),
+      messageStartMono: clock.now(),
+      postFirstUpdateCount: 0,
       stallMs: 0,
       stallCount: 0,
       inStall: false,
@@ -188,6 +210,13 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
     if (!active?.currentRequest) return;
     active.currentRequest.headersMono = clock.now();
     active.currentRequest.responseStatus = event.status;
+  });
+
+  pi.on("message_start", (event) => {
+    if (!active?.currentRequest || !isAssistantMessage(event.message)) return;
+    active.currentRequest.messageStartMono = clock.now();
+    active.currentRequest.lastUpdateMono = undefined;
+    active.currentRequest.inStall = false;
   });
 
   pi.on("message_update", (event) => {
@@ -202,6 +231,8 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       request.lastUpdateMono = now;
       return;
     }
+    request.postFirstUpdateCount += 1;
+    request.lastStreamUpdateMono = now;
     // Subsequent deltas: gaps ≥ STALL_THRESHOLD_MS are inference stalls (GPU or
     // server queueing). The full gap counts as stall time; consecutive stalled
     // updates merge into one stall event, mirroring the original pi-tps.

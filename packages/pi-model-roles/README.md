@@ -43,7 +43,7 @@ pi install npm:@oipsanthony/pi-model-roles
 | `Ctrl+P` | 切换到下一个角色 |
 | `Ctrl+Shift+P` | 切换到上一个角色 |
 
-切换时，editor 上方会短暂显示角色列表、当前角色和 thinking level。无法认证或不存在的模型会从循环中跳过。
+切换时会在 Powerline 上方短暂显示 Powerline 风格的彩色角色轨道，并在约 3 秒后自动清除。每个角色按循环位置使用稳定颜色，当前角色显示为带左右端帽的反色粗体 Chip。Pi 对同一 `aboveEditor` placement 按 package 注册顺序排列。若同一份 `settings.json` 里 `pi-model-roles` 排在 `pi-powerline-footer` 后面，扩展会在启动时把前者挪到后者正前方，下次启动或 `/reload` 后生效；当前会话不重载。两包分别写在用户和项目配置中时不会改文件。无法认证或不存在的模型会从循环中跳过。
 
 ## 快捷键冲突
 

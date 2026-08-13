@@ -7,7 +7,7 @@
  */
 
 import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { matchesKey, type EditorComponent } from "@mariozechner/pi-tui";
+import { isKeyRelease, matchesKey, type EditorComponent } from "@mariozechner/pi-tui";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -187,6 +187,10 @@ function formatShortcutHint(prev: string, next: string): string {
 
 function isKnownConflict(shortcut: ShortcutKey): boolean {
   return shortcut === "up" || shortcut === "down";
+}
+
+export function matchesHistoryKeyEvent(data: string, shortcut: ShortcutKey): boolean {
+  return !isKeyRelease(data) && matchesKey(data, shortcut);
 }
 
 export function getHistoryNavigationAction(
@@ -399,8 +403,8 @@ export default function register(pi: ExtensionAPI) {
 
     debug("raw input listener registered", { keyPrev, keyNext, useRawPrev, useRawNext });
     unsubscribeRawInput = ctx.ui.onTerminalInput((data) => {
-      const matchesPrev = useRawPrev && matchesKey(data, keyPrev);
-      const matchesNext = useRawNext && matchesKey(data, keyNext);
+      const matchesPrev = useRawPrev && matchesHistoryKeyEvent(data, keyPrev);
+      const matchesNext = useRawNext && matchesHistoryKeyEvent(data, keyNext);
       if (!matchesPrev && !matchesNext) {
         return;
       }

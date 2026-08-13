@@ -11,6 +11,7 @@ import register, {
   emptyUsage,
   formatDuration,
   formatTokens,
+  measureTps,
   rate,
   rateAfterStall,
   renderReport,
@@ -66,7 +67,7 @@ const usage: Usage = {
 
 function request(overrides: Partial<RequestMetrics> = {}): RequestMetrics {
   return {
-    version: 1,
+    version: 2,
     id: "prompt-1:1",
     promptId: "prompt-1",
     sequence: 1,
@@ -80,6 +81,10 @@ function request(overrides: Partial<RequestMetrics> = {}): RequestMetrics {
     headersMs: 100,
     ttftMs: 500,
     generationMs: 1000,
+    streamMs: 1000,
+    postFirstUpdateCount: 5,
+    effectiveGenerationMs: 1000,
+    tpsBranch: "primary",
     stallMs: 0,
     stallCount: 0,
     totalMs: 1600,
@@ -217,6 +222,7 @@ async function completeRequest(
   options: { ttftMs: number; generationMs: number; totalMs: number; message?: AssistantMessage },
 ): Promise<void> {
   await emit(harness, "before_provider_request", { payload: {} });
+  await emit(harness, "message_start", { message: options.message ?? assistant() });
   harness.advance(100);
   await emit(harness, "after_provider_response", { status: 200, headers: {} });
   harness.advance(options.ttftMs - 100);
@@ -224,7 +230,24 @@ async function completeRequest(
     message: options.message ?? assistant(),
     assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: options.message ?? assistant() },
   });
-  harness.advance(options.generationMs);
+  await emit(harness, "message_update", {
+    message: options.message ?? assistant(),
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: options.message ?? assistant() },
+  });
+  const updateCount = Math.max(5, Math.ceil(options.generationMs / 400));
+  const updateStep = options.generationMs / updateCount;
+  for (let index = 0; index < updateCount; index += 1) {
+    harness.advance(updateStep);
+    await emit(harness, "message_update", {
+      message: options.message ?? assistant(),
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: String.fromCharCode(98 + index),
+        partial: options.message ?? assistant(),
+      },
+    });
+  }
   await emit(harness, "message_end", { message: options.message ?? assistant() });
   harness.advance(options.totalMs - options.ttftMs - options.generationMs);
   await emit(harness, "turn_end", { turnIndex: 0, message: options.message ?? assistant(), toolResults: [] });
@@ -234,7 +257,15 @@ describe("metric aggregation", () => {
   test("uses weighted generation time instead of averaging request rates", () => {
     const requests = [
       request(),
-      request({ id: "prompt-1:2", sequence: 2, generationMs: 3000, totalMs: 3500, outputTps: 100 / 3 }),
+      request({
+        id: "prompt-1:2",
+        sequence: 2,
+        generationMs: 3000,
+        streamMs: 3000,
+        effectiveGenerationMs: 3000,
+        totalMs: 3500,
+        outputTps: 100 / 3,
+      }),
     ];
     const metrics = aggregatePrompt("prompt-1", 1000, 7000, 6000, requests);
 
@@ -255,6 +286,71 @@ describe("metric aggregation", () => {
     assert.equal(metrics.usage.output, 200);
     assert.ok(Math.abs((metrics.effectiveTps ?? 0) - 66.666) < 0.01);
     assert.notEqual(metrics.processingMs, prompts[1]!.completedAt - prompts[0]!.startedAt);
+  });
+
+  test("does not combine individually unmeasurable requests into a prompt fallback", () => {
+    const unavailable = {
+      streamMs: 100,
+      postFirstUpdateCount: 1,
+      effectiveGenerationMs: null,
+      tpsBranch: "unavailable" as const,
+      tpsUnavailableReason: "insufficient-updates" as const,
+      outputTps: null,
+    };
+    const metrics = aggregatePrompt("prompt-1", 1000, 3000, 2000, [
+      request(unavailable),
+      request({ ...unavailable, id: "prompt-1:2", sequence: 2 }),
+    ]);
+
+    assert.equal(metrics.activeTps, null);
+    assert.equal(metrics.effectiveGenerationMs, null);
+    assert.equal(metrics.tpsBranch, "unavailable");
+    assert.equal(metrics.tpsUnavailableReason, "insufficient-updates");
+  });
+
+  test("uses the primary streaming window when it is reliable", () => {
+    const measurement = measureTps({
+      outputTokens: 100,
+      generationMs: 1500,
+      streamMs: 1000,
+      postFirstUpdateCount: 5,
+      stallMs: 0,
+    });
+
+    assert.equal(measurement.branch, "primary");
+    assert.equal(measurement.effectiveMs, 1000);
+    assert.equal(measurement.tps, 100);
+  });
+
+  test("returns unavailable for a short buffered burst", () => {
+    const measurement = measureTps({
+      outputTokens: 100,
+      generationMs: 100,
+      streamMs: 1,
+      postFirstUpdateCount: 5,
+      stallMs: 0,
+    });
+
+    assert.equal(measurement.branch, "unavailable");
+    assert.equal(measurement.unavailableReason, "insufficient-duration");
+    assert.equal(measurement.tps, null);
+  });
+
+  test("keeps session active TPS unavailable when an output prompt is unmeasurable", () => {
+    const metrics = aggregateSession([
+      prompt({ version: 2, effectiveGenerationMs: 1000, tpsBranch: "primary" }),
+      prompt({
+        version: 2,
+        id: "prompt-2",
+        activeTps: null,
+        effectiveGenerationMs: null,
+        tpsBranch: "unavailable",
+        tpsUnavailableReason: "insufficient-updates",
+      }),
+    ], []);
+
+    assert.equal(metrics.activeTps, null);
+    assert.ok(metrics.effectiveTps !== null);
   });
 
   test("returns n/a rates for empty output and zero generation duration", () => {
@@ -282,7 +378,15 @@ describe("metric aggregation", () => {
   });
 
   test("subtracts stall time from generation time for active TPS", () => {
-    const requests = [request({ generationMs: 4000, stallMs: 1000, stallCount: 1 })];
+    const requests = [request({
+      generationMs: 4000,
+      streamMs: null,
+      postFirstUpdateCount: 2,
+      effectiveGenerationMs: 3000,
+      tpsBranch: "fallback",
+      stallMs: 1000,
+      stallCount: 1,
+    })];
     const metrics = aggregatePrompt("prompt-1", 1000, 7000, 6000, requests);
 
     assert.equal(metrics.generationMs, 4000);
@@ -351,7 +455,7 @@ describe("extension lifecycle", () => {
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
     assert.equal(recordedRequest.ttftMs, 500);
-    assert.equal(recordedRequest.generationMs, 1000);
+    assert.equal(recordedRequest.generationMs, 1500);
     assert.equal(recordedRequest.totalMs, 1600);
     assert.equal(recordedRequest.outputTps, 100);
     assert.equal(recordedRequest.usage.reasoning, 25);
@@ -369,7 +473,7 @@ describe("extension lifecycle", () => {
     );
   });
 
-  test("starts TTFT and generation timing at the first content delta", async () => {
+  test("measures generation from message_start while TTFT starts at the provider request", async () => {
     const harness = createHarness();
     const message = assistant();
     await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
@@ -391,7 +495,7 @@ describe("extension lifecycle", () => {
 
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     assert.equal(recordedRequest.ttftMs, 500);
-    assert.equal(recordedRequest.generationMs, 1000);
+    assert.equal(recordedRequest.generationMs, 1500);
   });
 
   test("uses turn_end as the generation boundary when OMP omits message_end", async () => {
@@ -411,11 +515,12 @@ describe("extension lifecycle", () => {
 
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     assert.equal(recordedRequest.ttftMs, 3900);
-    assert.equal(recordedRequest.generationMs, 8500);
-    assert.ok(recordedRequest.outputTps !== null);
+    assert.equal(recordedRequest.generationMs, 12_400);
+    assert.equal(recordedRequest.outputTps, null);
+    assert.equal(recordedRequest.tpsUnavailableReason, "insufficient-updates");
     assert.match(
       (harness.entries[2]!.data as { line?: string }).line ?? "",
-      /^TPS 1\.3 tok\/s · TTFT 3\.9s · in 100 · out 11 · 12\.5s$/,
+      /^TPS n\/a tok\/s · TTFT 3\.9s · in 100 · out 11 · 12\.5s$/,
     );
   });
 
@@ -462,13 +567,43 @@ describe("extension lifecycle", () => {
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     assert.equal(recordedRequest.stallMs, 600);
     assert.equal(recordedRequest.stallCount, 1);
-    assert.equal(recordedRequest.generationMs, 1000); // 600 + 200 + 200
-    assert.equal(recordedRequest.outputTps, 250); // 100 tok / 0.4s net of stall
+    assert.equal(recordedRequest.generationMs, 1500); // message start → message end
+    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.9) < 0.01);
+    assert.equal(recordedRequest.tpsBranch, "fallback");
     const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
     assert.equal(recordedPrompt.stallMs, 600);
     const line = (harness.entries[2]!.data as { line?: string }).line ?? "";
-    assert.match(line, /^TPS 250\.0 tok\/s/);
+    assert.match(line, /^TPS 111\.1 tok\/s/);
     assert.match(line, /· stall 600ms×1 · 1\.5s$/);
+  });
+
+  test("keeps a stall after the first delta inside the primary stream window", async () => {
+    const harness = createHarness();
+    const message = assistant();
+    await emit(harness, "before_agent_start", { prompt: "stall before stream", systemPrompt: "", systemPromptOptions: {} });
+    await emit(harness, "before_provider_request", { payload: {} });
+    await emit(harness, "message_start", { message });
+    harness.advance(100);
+    await emit(harness, "message_update", {
+      message,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: message },
+    });
+    for (const [gap, delta] of [[600, "b"], [300, "c"], [300, "d"], [300, "e"], [300, "f"]] as const) {
+      harness.advance(gap);
+      await emit(harness, "message_update", {
+        message,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
+      });
+    }
+    await emit(harness, "message_end", { message });
+    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
+    await emit(harness, "agent_settled", {});
+
+    const recorded = harness.entries[0]!.data as RequestMetrics;
+    assert.equal(recorded.streamMs, 1800);
+    assert.equal(recorded.stallMs, 600);
+    assert.equal(recorded.tpsBranch, "primary");
+    assert.ok(Math.abs((recorded.outputTps ?? 0) - 100 / 1.2) < 0.01);
   });
 
   test("merges consecutive stalled updates into one stall event and discounts dominance", async () => {
@@ -497,9 +632,9 @@ describe("extension lifecycle", () => {
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     assert.equal(recordedRequest.stallMs, 1400);
     assert.equal(recordedRequest.stallCount, 1);
-    // generationMs = 1600 (first delta → message end); stall 1400 > 85% of 1600
-    // → dominated branch, half discounted: 100 tok / (1600 - 1400/2)ms
-    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.9) < 0.01);
+    // generationMs = 2100 (request start fallback → message end), so the
+    // fallback subtracts the 1400ms stall from the full generation window.
+    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.7) < 0.01);
     const line = (harness.entries[2]!.data as { line?: string }).line ?? "";
     assert.match(line, /· stall 1\.4s×1 /);
   });
@@ -543,6 +678,26 @@ describe("extension lifecycle", () => {
     assert.equal(recorded.ttftMs, null);
     assert.equal(recorded.outputTps, null);
     assert.equal(recorded.stopReason, "error");
+  });
+
+  test("restores legacy v1 entry names alongside v2 entries", () => {
+    const legacyRequest = { ...request(), version: 1 as const };
+    delete legacyRequest.streamMs;
+    delete legacyRequest.postFirstUpdateCount;
+    delete legacyRequest.effectiveGenerationMs;
+    delete legacyRequest.tpsBranch;
+    const legacyPrompt = prompt();
+    const sessionManager = {
+      getBranch: () => [
+        { type: "custom", customType: "pi-tps/request/v1", data: legacyRequest },
+        { type: "custom", customType: "pi-tps/prompt/v1", data: legacyPrompt },
+        { type: "custom", customType: REQUEST_ENTRY_TYPE, data: request({ id: "prompt-2:1" }) },
+      ],
+    };
+
+    const restored = restoreMetrics(sessionManager);
+    assert.equal(restored.requests.length, 2);
+    assert.equal(restored.prompts.length, 1);
   });
 
   test("restores only metrics on the active branch after tree navigation", async () => {

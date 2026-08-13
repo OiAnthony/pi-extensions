@@ -71,7 +71,7 @@ describe("configuration and title normalization", () => {
     });
     assert.equal(config.enabled, false);
     assert.equal(config.refreshTurns, 4);
-    assert.equal(config.timeoutMs, 5_000);
+    assert.equal(config.timeoutMs, 30_000);
     assert.equal(config.maxTokens, 80);
     assert.equal(config.maxLength, 30);
     assert.equal(config.thinkingLevel, "minimal");

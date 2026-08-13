@@ -205,14 +205,14 @@
 
 #### Scenario: 只有一个可用角色
 - **WHEN** 循环中只有一个可用角色
-- **THEN** 快捷键选择或保持该角色并显示角色轨道，不产生越界或重复状态
+- **THEN** 快捷键选择或保持该角色并显示角色状态，不产生越界或重复状态
 
 #### Scenario: 普通依赖不激活快捷键
 - **WHEN** 另一个 package 仅将 `@oipsanthony/pi-model-roles` 声明为 npm dependency
 - **THEN** Pi 不因该传递性依赖加载角色切换 extension
 
 ### Requirement: 快捷键应用模型和 thinking level
-快捷键切换 SHALL 只修改当前主 Agent。系统 SHALL 先等待 `pi.setModel()` 成功，再为带显式 thinking level 的角色调用 `pi.setThinkingLevel()`；角色未配置显式 thinking level 时 SHALL 不主动调用 `pi.setThinkingLevel()`。系统 SHALL 以 Pi 约束后的最终 thinking level 作为显示状态。
+快捷键切换 SHALL 只修改当前主 Agent。系统 SHALL 先等待 `pi.setModel()` 成功，再为带显式 thinking level 的角色调用 `pi.setThinkingLevel()`；角色未配置显式 thinking level 时 SHALL 不主动调用 `pi.setThinkingLevel()`。系统 SHALL 以 Pi 约束后的最终 thinking level 记录活动角色匹配状态，但不在瞬时角色状态中显示该值。
 
 #### Scenario: 切换带 thinking level 的角色
 - **WHEN** 快捷键选择 `openai-codex/gpt-5.4:xhigh` 对应角色且模型切换成功
@@ -224,34 +224,42 @@
 
 #### Scenario: 宿主约束 thinking level
 - **WHEN** 角色请求的 thinking level 超出目标模型支持范围
-- **THEN** 系统接受 Pi 的约束结果，并在角色轨道显示最终生效值
+- **THEN** 系统接受 Pi 的约束结果；角色状态不显示 thinking level
 
 #### Scenario: 模型切换失败
 - **WHEN** `pi.setModel()` 返回失败
 - **THEN** 系统不调用 `pi.setThinkingLevel()`，不更新活动角色，并保留主 Agent 的原状态
 
 ### Requirement: 瞬时角色轨道
-快捷键切换 SHALL 在编辑器上方显示单行瞬时角色轨道，列出循环角色、突出当前角色并显示最终生效的 thinking level。角色轨道 SHALL 使用 1 列左侧 padding 与 editor 内容对齐，并在截断时计入该空间。与使用 `aboveEditor` placement 的 powerline 同时启用时，角色轨道 SHALL 位于 powerline 上方，并在自身内容行与 powerline 之间保留 1 个空白行。系统 SHALL 在 `session_start` 预注册稳定 widget；隐藏轨道时 SHALL 返回空内容而不移除 widget，以保持插入顺序且不残留间距。轨道 SHALL 在约 1.5 秒后清除；计时期间连续切换 SHALL 原位更新同一个 widget 并重置清除计时器。
+快捷键切换 SHALL 通过稳定的 `aboveEditor` widget 显示单行瞬时角色轨道。轨道 SHALL 不包含标题前缀或 thinking level。每个角色 SHALL 按循环位置从稳定主题色序列取色；当前角色 SHALL 使用同一位置颜色绘制 Powerline 左右端帽，并使用 reverse-video 背景和粗体标签；相邻普通角色 SHALL 使用 dim Powerline 细分隔符，当前 Chip 两侧 SHALL 使用空白间隔。轨道 SHALL 使用 1 列左侧 padding，并在截断时计入该空间；自身内容行与后续 Powerline 之间 SHALL 保留 1 个空白行。系统 SHALL 在 `session_start` 预注册稳定 widget；隐藏轨道时 SHALL 返回空内容而不移除 widget。轨道 SHALL 在约 3 秒后清除；计时期间连续切换 SHALL 原位更新同一 widget 并重置清除计时器。
 
-#### Scenario: 显示并自动清除轨道
+#### Scenario: 显示并自动清除状态
 - **WHEN** 角色切换成功
-- **THEN** 编辑器上方出现突出当前角色的轨道，并在约 1.5 秒无后续切换后消失
+- **THEN** `aboveEditor` widget 出现按位置分色且以反色 Chip 突出当前角色的单行轨道，不包含标题前缀或 thinking level，并在约 3 秒无后续切换后消失
 
-#### Scenario: 连续切换原位更新
-- **WHEN** 用户在轨道消失前再次切换角色
-- **THEN** 系统更新现有轨道而不堆叠或重新插入 widget，并从最后一次切换重新计算清除时间
+#### Scenario: 连续切换更新状态
+- **WHEN** 用户在状态消失前再次切换角色
+- **THEN** 系统更新现有 widget，不堆叠或重新插入，并从最后一次切换重新计算清除时间
 
-#### Scenario: 与 editor 左侧对齐
-- **WHEN** 角色轨道显示在任意支持宽度的终端中
-- **THEN** 轨道内容具有 1 列左侧 padding，且包含 padding 的最终可见宽度不超过 widget 可用宽度
+#### Scenario: 不同角色保持稳定颜色
+- **WHEN** 当前角色位于循环顺序中的任意位置
+- **THEN** 每个角色保留其位置对应颜色，只有 reverse-video Chip 随当前角色移动
 
-#### Scenario: 与 powerline 保持垂直间距
-- **WHEN** 角色轨道显示在 powerline 上方
-- **THEN** 轨道内容行与 powerline 之间有 1 个空白行；轨道隐藏后该空白行一并消失
+#### Scenario: 显示在 Powerline 上方
+- **WHEN** model roles package 在使用 `aboveEditor` placement 的 Powerline package 之前加载
+- **THEN** 角色轨道的稳定 widget 先注册并显示在 Powerline 上方
 
-#### Scenario: 显示在 powerline 上方
-- **WHEN** model roles package 在使用 `aboveEditor` placement 的 powerline package 之前加载
-- **THEN** 角色轨道的稳定 widget 先注册并显示在 powerline 上方
+#### Scenario: 持久化 package 顺序供下次启动使用
+- **WHEN** 同一份 `settings.json` 的 `packages` 中 `pi-powerline-footer` 排在 `pi-model-roles` 之前
+- **THEN** 系统将该文件中的 `pi-model-roles` 条目挪到 `pi-powerline-footer` 正前方并写回，不重载当前 session
+
+#### Scenario: 跨 scope 的 package 不改写
+- **WHEN** `pi-model-roles` 与 `pi-powerline-footer` 不在同一份 `settings.json` 中
+- **THEN** 系统不改写任一配置文件
+
+#### Scenario: Session 结束时清理状态
+- **WHEN** 当前 session shutdown
+- **THEN** 系统取消待执行的清除计时器并移除角色 widget
 
 ### Requirement: 快捷键冲突前置配置
 文档 SHALL 明确 Pi 0.84.1 的 `app.model.cycleForward` 和 `app.model.cycleBackward` 内置绑定会占用 `Ctrl+P` 和 `Ctrl+Shift+P`。文档 SHALL 要求需要角色快捷键的用户在 `~/.pi/agent/keybindings.json` 中将这两个 action 配置为空数组，并在修改后执行 `/reload`。
