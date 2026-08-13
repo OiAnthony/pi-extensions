@@ -1,37 +1,33 @@
 # pi-command-history
 
-Folder-based persistent command history for [pi](https://github.com/badlogic/pi-mono). Recall previous commands with `up`/`down` across sessions — as long as you're in the same folder, your full command history is always available.
+按工作目录保存 Pi 的输入历史。重新打开 Pi 或创建新 session 后，仍可在同一目录中找回之前输入的 Prompt、slash command 和 shell command。
 
-## Fork provenance
-
-This package is maintained as part of [OiAnthony/pi-extensions](https://github.com/OiAnthony/pi-extensions) and originates from a fork of [ross-jill-ws/pi-command-history](https://github.com/ross-jill-ws/pi-command-history) by [Ross Z](https://github.com/ross-jill-ws). Subsequent changes are maintained in this repository.
-
-## Install
+## 安装
 
 ```bash
 pi install npm:@oipsanthony/pi-command-history
 ```
 
-Or try without installing:
+也可以临时加载：
 
 ```bash
 pi -e npm:@oipsanthony/pi-command-history
 ```
 
-## Usage
+## 使用
 
-| Shortcut | Action |
-|----------|--------|
-| `up` | Previous command (older) |
-| `down` | Next command (newer) |
+| 按键 | 操作 |
+|------|------|
+| `Up` | 查看更早的输入 |
+| `Down` | 查看更新的输入 |
 
-When you enter a command in pi, it's saved to a per-folder history file. Next time you open pi in the same folder (even in a new session), press `up` from an empty editor to cycle through your previous commands.
+在空 editor 中按 `Up` 开始浏览历史。浏览多行内容时，只有光标位于首行或末行，按键才会切换历史；autocomplete 打开时仍由 Pi 处理 `Up` 和 `Down`。
 
-By default, `up`/`down` are handled through raw terminal input to avoid pi extension shortcut conflict warnings with `tui.select.up` and `tui.select.down`. The extension intercepts these keys when history navigation owns the cursor position; other cases fall back to pi's normal cursor movement or command completion.
+扩展会去除重复项，每个工作目录最多保留最近 500 条输入。
 
-## Config
+## 配置
 
-Create `~/.pi/pi-command-history.json` to customize shortcuts, conflict handling, or status display:
+可选配置文件为 `~/.pi/pi-command-history.json`：
 
 ```json
 {
@@ -45,60 +41,26 @@ Create `~/.pi/pi-command-history.json` to customize shortcuts, conflict handling
 }
 ```
 
-Invalid config values are ignored and fall back to the defaults.
+| 字段 | 可选值 | 说明 |
+|------|--------|------|
+| `shortcuts.prev` | Pi shortcut | 上一条历史，默认 `up` |
+| `shortcuts.next` | Pi shortcut | 下一条历史，默认 `down` |
+| `conflictStrategy` | `auto`、`register`、`safe` | 快捷键冲突处理，默认 `auto` |
+| `showStatus` | `hidden`、`text`、`full` | footer 状态显示方式，默认隐藏 |
+| `debug` | `true`、`false` | 将按键诊断写入 debug log |
 
-The `showStatus` field controls whether a status indicator appears in the footer:
+`auto` 会避免 Pi 对默认 `Up` 和 `Down` 发出快捷键冲突提示。`safe` 会把冲突的默认按键改为 `Ctrl+Up` 和 `Ctrl+Down`。通常无需修改该选项。
 
-| Value | Behavior |
-|---|---|
-| `"hidden"` | No status indicator shown (default) |
-| `"text"` | Show `12 cmds (↑/↓)` without icon |
-| `"full"` | Show `📜 12 cmds (↑/↓)` with icon |
+## 数据位置
 
-Set `debug` to `true`, or start pi with `PI_COMMAND_HISTORY_DEBUG=1`, to write terminal key diagnostics to `~/.pi/pi-command-history-debug.log`. Debug logging records escape sequences and history state, not normal text input.
+历史保存在 `~/.pi/folder-history/`。启用 debug 后，日志写入 `~/.pi/pi-command-history-debug.log`，不会记录普通文本输入。
 
-### Conflict strategy
-
-| Strategy | Behavior |
-|----------|----------|
-| `auto` | Default. Known conflicting `up`/`down` shortcuts use raw terminal input; other shortcuts use `pi.registerShortcut()`. |
-| `register` | Always use `pi.registerShortcut()`. This can show pi shortcut conflict warnings for `up`/`down`. |
-| `safe` | Replace conflicting `up`/`down` shortcuts with `ctrl+up`/`ctrl+down`. |
-
-Raw terminal input interception starts history navigation only from an empty editor. Once browsing history, it consumes `up` on the first visual line and `down` on the last visual line, including at the oldest and newest boundaries, so pi's built-in history cannot take over. Autocomplete always keeps ownership of `up`/`down`.
-
-Registered shortcuts reserve their key in pi even when history navigation is unavailable. Use `auto` with `up`/`down` when the editor should retain its normal behavior outside history navigation.
-
-### What gets saved
-
-- All user input is saved, including `/` slash commands
-- History is deduplicated — repeated commands move to the most recent position
-- Up to 500 commands are stored per folder
-
-### How it works
-
-- History files are stored in `~/.pi/folder-history/` as JSONL, keyed by a SHA-256 hash of the working directory
-- Each history file is compacted to the latest 500 entries after reaching 1,000 stored records
-- A status indicator in the footer shows the number of saved commands
-- Compatible with other editor extensions (e.g., `pi-vim`) — no editor replacement conflicts
-- Non-conflicting shortcuts are registered with `pi.registerShortcut()`; conflicting `up`/`down` shortcuts use raw terminal input in `auto` mode
-
-## Uninstall
-
-```bash
-pi remove npm:pi-command-history
-```
-
-To also remove saved history:
+删除全部历史：
 
 ```bash
 rm -rf ~/.pi/folder-history/
 ```
 
-## License
+## 来源
 
-MIT
-
-## Acknowledgments
-
-The history navigation state machine was informed by [oh-my-pi](https://github.com/can1357/oh-my-pi).
+本 package fork 自 [ross-jill-ws/pi-command-history](https://github.com/ross-jill-ws/pi-command-history)，后续改动由本仓库维护。许可证见 [LICENSE](LICENSE)。

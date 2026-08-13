@@ -1,39 +1,49 @@
-# @oipsanthony/pi-tps
+# pi-tps
 
-在 Pi 和 OMP 中记录每次请求、每个 Prompt 与当前 Session 的 token throughput 和 latency 指标。
+在 Pi 和 OMP 中显示每个 Prompt 的 token throughput 和 latency，并汇总当前 session branch 的历史数据。
 
 ## 安装
+
+Pi：
 
 ```bash
 pi install npm:@oipsanthony/pi-tps
 ```
 
+OMP：
+
+```bash
+omp install @oipsanthony/pi-tps
+```
+
 ## 使用
 
-Extension 会在每个 Prompt 完成后显示一行摘要，包括输出 token、active TPS、effective TPS、TTFT、耗时与请求数。
+每个 Prompt 完成后，扩展会显示一行摘要，包括输出 token、active TPS、effective TPS、TTFT、耗时和请求数。
 
-执行以下命令可查看当前 active branch 中所有已完成 Prompt 的汇总：
+查看当前 active branch 中所有已完成 Prompt 的汇总：
 
 ```text
 /tps
 ```
 
-指标会作为 versioned session entries 持久化。切换 session tree 分支后，统计只恢复当前 active branch 上的数据。
+统计数据会保存在 session 中。切换 session tree 分支后，汇总也会切换到对应 branch。
 
 ## 指标
 
-- `active TPS`：输出 token 除以 generation time，并扣除检测到的 inference stall。
-- `effective TPS`：输出 token 除以完整 Prompt processing time。
-- `TTFT`：provider request 开始到首个 content delta 的时间。
-- `stall`：相邻 stream update 间超过 500 ms 的间隔。
-- `requests`：一个 Prompt 内完成的 provider request 数量。
+| 指标 | 含义 |
+|------|------|
+| `active TPS` | 模型实际生成期间的 token 速度，扣除检测到的 streaming stall |
+| `effective TPS` | 输出 token 除以完整 Prompt 处理时间 |
+| `TTFT` | Provider request 开始到第一个 content delta 的时间 |
+| `stall` | content stream update 之间至少 500 ms 的停顿 |
+| `requests` | 一个 Prompt 内完成的 Provider request 数量 |
 
-无法可靠计算的指标显示为 `n/a`。Extension 会拒绝超过 `10,000 tok/s` 的异常测量值。
+当 stream 事件不足或测量结果不可靠时，`active TPS` 会显示 `n/a`。
 
-## 数据边界
+## 数据
 
-Extension 保存 token usage、timing、provider、model、HTTP status 和 stop reason。失败请求可能包含 Pi 提供的 error message。数据写入当前 Pi session，不会发送到外部服务。
+扩展会将 token usage、timing、Provider、模型、HTTP status 和 stop reason 写入当前 session。失败请求可能包含 Pi 提供的 error message。数据不会发送到外部服务。
 
 ## Attribution
 
-本 package 包含基于 `monotykamary/pi-tps` 和 `badlogic/pi-mono` 修改的代码。版权与许可证信息见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。
+本 package 包含基于 [`monotykamary/pi-tps`](https://github.com/monotykamary/pi-tps) 和 [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono) 修改的代码。版权与许可证信息见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。

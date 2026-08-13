@@ -1,50 +1,53 @@
-# @oipsanthony/pi-model-roles
+# pi-model-roles
 
-为 Pi extension 提供共享的模型角色配置、认证解析和当前模型回退。直接安装此 package 时，还可用快捷键循环切换主 Agent 的角色。
+为常用模型配置简短角色名，并在 Pi 中用快捷键循环切换。其他扩展也可以使用同一份角色配置解析模型和 thinking level。
 
 ## 安装
 
-仅作为其他 extension 的共享库时，将 package 声明为普通 npm dependency；这不会传递性启用角色切换 extension。
-
-需要为主 Agent 启用角色快捷键时直接安装：
+需要在 Pi 中使用角色切换时安装：
 
 ```bash
 pi install npm:@oipsanthony/pi-model-roles
 ```
 
+仅作为其他 extension 的共享依赖时，不需要单独安装。
+
 ## 配置
 
-配置文件位于 `${PI_CODING_AGENT_DIR:-~/.pi/agent}/model-roles.json`。以下能力档位只是一组可复制示例，runtime 不会创建内置角色、默认模型或默认 `cycleOrder`：
+创建 `${PI_CODING_AGENT_DIR:-~/.pi/agent}/model-roles.json`：
 
 ```json
 {
   "roles": {
-    "tiny": "<provider>/<haiku-or-flash-or-mini>:off",
-    "default": "<provider>/gpt-5.6-sol:medium",
-    "slow": "@default:xhigh",
-    "smol": "<provider>/gpt-5.6-luna:max",
-    "turbo": "<provider>/gpt-5.3-codex-spark:low"
+    "tiny": "<provider>/<fast-model>:minimal",
+    "default": "<provider>/<default-model>:medium",
+    "slow": "@default:xhigh"
   },
   "cycleOrder": ["tiny", "default", "slow"]
 }
 ```
 
-- `tiny`：低成本、低延迟。
-- `default`：日常质量、速度和成本均衡。
-- `slow`：速度较慢但性能更高的高推理档位。
-- `smol`：低成本且适合长程执行。
-- `turbo`：高 TPS、高吞吐。
+角色值支持：
 
-角色名称可自定义并区分大小写。角色值支持 `provider/modelId[:thinkingLevel]` 和 `@role[:thinkingLevel]`。可用 thinking level 为 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。
+- `provider/modelId[:thinkingLevel]`
+- `@role[:thinkingLevel]`
 
-省略 `cycleOrder` 时，快捷键按 `roles` 的声明顺序循环。配置后只循环数组中的角色；未列入示例循环的 `smol` 和 `turbo` 仍可由插件通过 `@smol` 和 `@turbo` 解析。修改配置后执行 `/reload`。
+可用 thinking level 为 `off`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`。
 
-## 快捷键
+`cycleOrder` 决定快捷键切换顺序。省略时按 `roles` 的声明顺序切换。修改配置后执行 `/reload`。
 
-- `Ctrl+P`：向前循环角色。
-- `Ctrl+Shift+P`：向后循环角色。
+## 使用
 
-Pi 0.84.1 的内置模型循环、session selector 和 scoped models selector 会占用这些快捷键。启用角色快捷键前，先在 `~/.pi/agent/keybindings.json` 解除模型循环绑定，并将 selector 操作改绑到其他按键：
+| 快捷键 | 操作 |
+|--------|------|
+| `Ctrl+P` | 切换到下一个角色 |
+| `Ctrl+Shift+P` | 切换到上一个角色 |
+
+切换时，editor 上方会短暂显示角色列表、当前角色和 thinking level。无法认证或不存在的模型会从循环中跳过。
+
+## 快捷键冲突
+
+Pi 默认占用这两个快捷键。请在 `~/.pi/agent/keybindings.json` 中解除内置模型循环绑定：
 
 ```json
 {
@@ -55,22 +58,11 @@ Pi 0.84.1 的内置模型循环、session selector 和 scoped models selector �
 }
 ```
 
-修改后执行 `/reload`。extension 没有移除内置快捷键的 API，因此不能覆盖仍有效的内置绑定而不产生冲突提示。此配置保留了 `/scoped-models` 中按 provider 批量切换和 session selector 路径显示切换功能，快捷键分别改为 `Alt+P` 和 `Alt+Shift+P`。
+修改后执行 `/reload`。
 
-角色轨道使用编辑器上方的稳定 widget。Pi 按 package 加载顺序排列同一位置的 widget，因此同时使用 `pi-powerline-footer` 时，应让 model roles 先加载：
+## Extension API
 
-```json
-{
-  "packages": [
-    "npm:@oipsanthony/pi-model-roles",
-    "npm:pi-powerline-footer"
-  ]
-}
-```
-
-这样角色轨道显示在 powerline 上方，并在两者之间保留 1 个空白行；轨道消失时不会残留间距。修改 package 顺序后执行 `/reload`。
-
-## 共享 API
+其他 extension 可以直接使用角色解析：
 
 ```ts
 import {
@@ -79,5 +71,3 @@ import {
   selectThinkingLevel,
 } from "@oipsanthony/pi-model-roles";
 ```
-
-`resolveModelTarget()` 返回最终模型、完整认证环境、Role chain、thinking metadata、回退状态和结构化诊断。它不会保存 API key，也不会显示 UI 通知。
