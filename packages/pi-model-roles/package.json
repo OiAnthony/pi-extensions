@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-model-roles",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared model role resolution and optional role cycling for Pi extensions.",
   "type": "module",
   "exports": {
@@ -17,7 +17,11 @@
   "homepage": "https://github.com/OiAnthony/pi-extensions/tree/main/packages/pi-model-roles#readme",
   "author": "Anthony",
   "license": "MIT",
-  "keywords": ["pi-package", "model-roles", "model-selection"],
+  "keywords": [
+    "pi-package",
+    "model-roles",
+    "model-selection"
+  ],
   "files": [
     "LICENSE",
     "library/index.ts",
@@ -37,7 +41,9 @@
     "@earendil-works/pi-tui": "*"
   },
   "pi": {
-    "extensions": ["extensions/index.ts"]
+    "extensions": [
+      "extensions/index.ts"
+    ]
   },
   "devDependencies": {
     "@earendil-works/pi-tui": "0.83.0",
