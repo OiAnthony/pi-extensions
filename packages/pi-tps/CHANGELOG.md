@@ -1,5 +1,11 @@
 # @oipsanthony/pi-tps
 
+## 0.1.4
+
+### Patch Changes
+
+- f8a5343: 精简并重写面向用户的安装、使用、配置和限制说明。
+
 ## 0.1.3
 
 ### Patch Changes
