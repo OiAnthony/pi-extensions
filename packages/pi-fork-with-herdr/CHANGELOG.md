@@ -1,5 +1,11 @@
 # @oipsanthony/pi-fork-with-herdr
 
+## 0.1.2
+
+### Patch Changes
+
+- 74df898: Update package repository metadata after renaming the monorepo to pi-extensions.
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @oipsanthony/pi-codex-compaction
 
+## 0.2.1
+
+### Patch Changes
+
+- 74df898: Update package repository metadata after renaming the monorepo to pi-extensions.
+
 ## 0.2.0
 
 ### Minor Changes

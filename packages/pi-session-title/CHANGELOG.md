@@ -1,5 +1,13 @@
 # @oipsanthony/pi-session-title
 
+## 0.3.1
+
+### Patch Changes
+
+- 74df898: Update package repository metadata after renaming the monorepo to pi-extensions.
+- Updated dependencies [74df898]
+  - @oipsanthony/pi-model-roles@0.1.1
+
 ## 0.3.0
 
 ### Minor Changes
