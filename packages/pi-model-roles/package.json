@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-model-roles",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Shared model role resolution and optional role cycling for Pi extensions.",
   "type": "module",
   "exports": {

@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-prompt-translator",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Translate Chinese Pi editor drafts to English on demand before submission.",
   "type": "module",
   "repository": {

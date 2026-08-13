@@ -1,5 +1,11 @@
 # @oipsanthony/pi-command-history
 
+## 0.2.3
+
+### Patch Changes
+
+- d3604c3: 忽略按键释放事件，避免历史上翻时被 key release 重复触发。
+
 ## 0.2.2
 
 ### Patch Changes

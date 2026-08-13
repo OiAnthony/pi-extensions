@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-command-history",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Folder-based persistent command history for pi. Recall previous commands with up/down across sessions.",
   "type": "module",
   "repository": {
