@@ -1,5 +1,7 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   isResolvedModelTarget,
   loadModelRoles,
@@ -12,28 +14,142 @@ import {
 } from "../library/index.js";
 
 export const ROLE_WIDGET_ID = "pi-model-roles-track";
-export const ROLE_WIDGET_DURATION_MS = 1_500;
+export const ROLE_WIDGET_DURATION_MS = 3_000;
 export const ROLE_WIDGET_PADDING_X = 1;
 export const ROLE_WIDGET_GAP_LINES = 1;
 
 type HostModel = NonNullable<ExtensionContext["model"]>;
 type ShortcutContext = ExtensionContext;
-type RoleTrackTheme = ShortcutContext["ui"]["theme"];
+type RoleStatusTheme = ShortcutContext["ui"]["theme"];
 
 export interface RoleCandidate<Model extends ModelLike = HostModel> {
   name: string;
   resolution: ResolvedModelTarget<Model>;
 }
 
+export interface SettingsTextIO {
+  readTextFile(path: string): string | undefined;
+  writeTextFile(path: string, content: string): void;
+}
+
 export interface RoleExtensionDependencies {
   setTimer(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
   clearTimer(timer: ReturnType<typeof setTimeout>): void;
+  settingsIO?: SettingsTextIO;
+  globalSettingsPath?: string;
+  projectSettingsPathFor?(cwd: string): string;
 }
 
 const defaultDependencies: RoleExtensionDependencies = {
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer),
 };
+
+const MODEL_ROLES_PACKAGE_ID = "pi-model-roles";
+const POWERLINE_FOOTER_PACKAGE_ID = "pi-powerline-footer";
+
+const defaultSettingsIO: SettingsTextIO = {
+  readTextFile(path) {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return undefined;
+    }
+  },
+  writeTextFile(path, content) {
+    writeFileSync(path, content);
+  },
+};
+
+export function packageEntrySource(entry: unknown): string | undefined {
+  if (typeof entry === "string") {
+    const source = entry.trim();
+    return source || undefined;
+  }
+  if (entry && typeof entry === "object" && "source" in entry) {
+    const source = (entry as { source?: unknown }).source;
+    if (typeof source === "string") {
+      const trimmed = source.trim();
+      return trimmed || undefined;
+    }
+  }
+  return undefined;
+}
+
+export function packageSourceIdentity(source: string): string {
+  let rest = source.trim().replaceAll("\\", "/");
+  if (rest.startsWith("npm:")) rest = rest.slice(4);
+  else if (rest.startsWith("git:")) rest = rest.slice(4);
+  const last = rest.split("/").filter(Boolean).at(-1) ?? rest;
+  return last.replace(/@[^@]+$/, "").toLowerCase();
+}
+
+export function planPackagesBeforePowerline(packages: readonly unknown[]): unknown[] | undefined {
+  let rolesIndex = -1;
+  let powerlineIndex = -1;
+  for (const [index, entry] of packages.entries()) {
+    const source = packageEntrySource(entry);
+    if (!source) continue;
+    const identity = packageSourceIdentity(source);
+    if (rolesIndex < 0 && identity === MODEL_ROLES_PACKAGE_ID) rolesIndex = index;
+    if (powerlineIndex < 0 && identity === POWERLINE_FOOTER_PACKAGE_ID) powerlineIndex = index;
+  }
+  if (rolesIndex < 0 || powerlineIndex < 0 || rolesIndex < powerlineIndex) return undefined;
+
+  const next = [...packages];
+  const [roles] = next.splice(rolesIndex, 1);
+  next.splice(powerlineIndex, 0, roles);
+  return next;
+}
+
+export function persistModelRolesBeforePowerline(
+  paths: readonly string[],
+  io: SettingsTextIO,
+): string[] {
+  const written: string[] = [];
+  for (const path of paths) {
+    if (persistSettingsPackages(path, io)) written.push(path);
+  }
+  return written;
+}
+
+function persistStartupPackageOrder(
+  ctx: ShortcutContext,
+  dependencies: RoleExtensionDependencies,
+): void {
+  const io = dependencies.settingsIO ?? defaultSettingsIO;
+  const paths = [dependencies.globalSettingsPath ?? join(getAgentDir(), "settings.json")];
+  if (ctx.isProjectTrusted()) {
+    paths.push(dependencies.projectSettingsPathFor?.(ctx.cwd) ?? join(ctx.cwd, ".pi", "settings.json"));
+  }
+  persistModelRolesBeforePowerline(paths, io);
+}
+
+function persistSettingsPackages(path: string, io: SettingsTextIO): boolean {
+  const text = io.readTextFile(path);
+  if (text === undefined) return false;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+
+  const settings = parsed as { packages?: unknown };
+  if (!Array.isArray(settings.packages)) return false;
+
+  const packages = planPackagesBeforePowerline(settings.packages);
+  if (!packages) return false;
+
+  try {
+    io.writeTextFile(path, `${JSON.stringify({ ...settings, packages }, null, 2)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function modelKey(model: ModelLike | undefined): string | undefined {
   return model ? `${model.provider}/${model.id}` : undefined;
@@ -83,17 +199,43 @@ export function nextRoleIndex(currentIndex: number, count: number, direction: 1 
   return (currentIndex + direction + count) % count;
 }
 
-function roleTrackLine(
-  theme: RoleTrackTheme,
+const ROLE_TRACK_COLORS: ReadonlyArray<Parameters<RoleStatusTheme["fg"]>[0]> = [
+  "accent",
+  "success",
+  "warning",
+  "error",
+  "mdCode",
+  "mdLink",
+];
+const ROLE_TRACK_CAP_LEFT = "";
+const ROLE_TRACK_CAP_RIGHT = "";
+const ROLE_TRACK_SEPARATOR = "";
+const REVERSE_ON = "\x1b[7m";
+const REVERSE_OFF = "\x1b[27m";
+
+function roleStatusText(
+  theme: RoleStatusTheme,
   candidates: readonly RoleCandidate[],
   activeName: string,
-  finalThinking: ThinkingLevel,
 ): string {
-  const items = candidates.map((candidate) => {
-    const label = candidate.name === activeName ? `[${candidate.name}]` : candidate.name;
-    return candidate.name === activeName ? theme.fg("accent", theme.bold(label)) : theme.fg("muted", label);
+  let track = "";
+  candidates.forEach((candidate, index) => {
+    const active = candidate.name === activeName;
+    if (index > 0) {
+      const previousActive = candidates[index - 1]?.name === activeName;
+      track += active || previousActive ? "  " : ` ${theme.fg("dim", ROLE_TRACK_SEPARATOR)} `;
+    }
+
+    const color = ROLE_TRACK_COLORS[index % ROLE_TRACK_COLORS.length]!;
+    if (!active) {
+      track += theme.fg(color, candidate.name);
+      return;
+    }
+
+    const chip = `${ROLE_TRACK_CAP_LEFT}${REVERSE_ON} ${theme.bold(candidate.name)} ${REVERSE_OFF}${ROLE_TRACK_CAP_RIGHT}`;
+    track += theme.fg(color, chip);
   });
-  return `${items.join(theme.fg("dim", "  "))} ${theme.fg("dim", `(${finalThinking})`)}`;
+  return track;
 }
 
 export default function register(
@@ -104,11 +246,7 @@ export default function register(
   let clearWidgetTimer: ReturnType<typeof setTimeout> | undefined;
   let switching = false;
   let active: { name: string; modelId: string; thinkingLevel: ThinkingLevel } | undefined;
-  let roleTrack: {
-    candidates: readonly RoleCandidate[];
-    activeName: string;
-    finalThinking: ThinkingLevel;
-  } | undefined;
+  let roleTrack: { candidates: readonly RoleCandidate[]; activeName: string } | undefined;
   let widgetInstalled = false;
   let requestWidgetRender: (() => void) | undefined;
 
@@ -135,12 +273,13 @@ export default function register(
         render(width: number): string[] {
           if (!roleTrack || width <= ROLE_WIDGET_PADDING_X) return [];
           const contentWidth = width - ROLE_WIDGET_PADDING_X;
-          const line = truncateToWidth(
-            roleTrackLine(theme, roleTrack.candidates, roleTrack.activeName, roleTrack.finalThinking),
+          const track = truncateToWidth(
+            roleStatusText(theme, roleTrack.candidates, roleTrack.activeName),
             contentWidth,
+            "",
           );
           return [
-            `${" ".repeat(ROLE_WIDGET_PADDING_X)}${line}`,
+            `${" ".repeat(ROLE_WIDGET_PADDING_X)}${track}`,
             ...Array.from({ length: ROLE_WIDGET_GAP_LINES }, () => ""),
           ];
         },
@@ -156,11 +295,10 @@ export default function register(
     ctx: ShortcutContext,
     candidates: readonly RoleCandidate[],
     activeName: string,
-    finalThinking: ThinkingLevel,
   ): void => {
     installWidget(ctx);
     if (clearWidgetTimer) dependencies.clearTimer(clearWidgetTimer);
-    roleTrack = { candidates, activeName, finalThinking };
+    roleTrack = { candidates, activeName };
     requestWidgetRender?.();
     clearWidgetTimer = dependencies.setTimer(() => {
       clearWidgetTimer = undefined;
@@ -197,7 +335,7 @@ export default function register(
       }
       const finalThinking = pi.getThinkingLevel();
       active = { name: selected.name, modelId: selected.resolution.modelId, thinkingLevel: finalThinking };
-      showRoleTrack(ctx, candidates, selected.name, finalThinking);
+      showRoleTrack(ctx, candidates, selected.name);
     } catch {
       ctx.ui.notify("Unable to switch model roles.", "error");
     } finally {
@@ -216,6 +354,11 @@ export default function register(
   pi.on("session_start", (_event, ctx) => {
     active = undefined;
     hideRoleTrack();
+    try {
+      persistStartupPackageOrder(ctx, dependencies);
+    } catch {
+      // Keep session startup intact if settings I/O fails.
+    }
     installWidget(ctx);
   });
   pi.on("session_shutdown", (_event, ctx) => removeWidget(ctx));
