@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { EditorComponent } from "@mariozechner/pi-tui";
-import { getHistoryNavigationAction } from "./index.js";
+import { getHistoryNavigationAction, matchesHistoryKeyEvent } from "./index.js";
 
 type BoundaryEditor = EditorComponent & {
   isOnFirstVisualLine: () => boolean;
@@ -26,6 +26,19 @@ function action(
 ): ReturnType<typeof getHistoryNavigationAction> {
   return getHistoryNavigationAction(editor, text, historyIndex, 2, matchesPrev, matchesNext);
 }
+
+describe("matchesHistoryKeyEvent", () => {
+  test("handles Kitty press and repeat events but ignores release events", () => {
+    assert.equal(matchesHistoryKeyEvent("\x1b[1;1:1A", "up"), true);
+    assert.equal(matchesHistoryKeyEvent("\x1b[1;1:2A", "up"), true);
+    assert.equal(matchesHistoryKeyEvent("\x1b[1;1:3A", "up"), false);
+  });
+
+  test("continues to handle legacy arrow key sequences", () => {
+    assert.equal(matchesHistoryKeyEvent("\x1b[A", "up"), true);
+    assert.equal(matchesHistoryKeyEvent("\x1b[B", "down"), true);
+  });
+});
 
 describe("getHistoryNavigationAction", () => {
   test("starts history browsing only from an empty editor", () => {
