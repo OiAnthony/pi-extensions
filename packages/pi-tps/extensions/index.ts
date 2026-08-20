@@ -44,7 +44,6 @@ interface ActiveRequest {
   headersMono?: number;
   firstDeltaMono?: number;
   lastUpdateMono?: number;
-  lastStreamUpdateMono?: number;
   postFirstUpdateCount: number;
   stallMs: number;
   stallCount: number;
@@ -117,8 +116,12 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
     const generationMs = request.messageEndMono === undefined
       ? null
       : Math.max(0, request.messageEndMono - request.messageStartMono);
-    const streamMs = request.postFirstUpdateCount > 0 && request.firstDeltaMono !== undefined
-      ? Math.max(0, (request.lastStreamUpdateMono ?? request.firstDeltaMono) - request.firstDeltaMono)
+    // usage.output covers the completed response, so its TPS denominator must
+    // retain the tail from the last content delta through response completion.
+    const streamMs = request.postFirstUpdateCount > 0
+      && request.firstDeltaMono !== undefined
+      && request.messageEndMono !== undefined
+      ? Math.max(0, request.messageEndMono - request.firstDeltaMono)
       : null;
     const usage = message ? copyUsage(message.usage) : emptyUsage();
     const measurement = measureTps({
@@ -232,8 +235,7 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       return;
     }
     request.postFirstUpdateCount += 1;
-    request.lastStreamUpdateMono = now;
-    // Subsequent deltas: gaps ≥ STALL_THRESHOLD_MS are inference stalls (GPU or
+    // Subsequent deltas: gaps >= STALL_THRESHOLD_MS are inference stalls (GPU or
     // server queueing). The full gap counts as stall time; consecutive stalled
     // updates merge into one stall event, mirroring the original pi-tps.
     const gap = now - (request.lastUpdateMono ?? now);

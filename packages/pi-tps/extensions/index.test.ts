@@ -498,6 +498,35 @@ describe("extension lifecycle", () => {
     assert.equal(recordedRequest.generationMs, 1500);
   });
 
+  test("keeps the response tail in the primary TPS window", async () => {
+    const harness = createHarness();
+    const message = assistant();
+    await emit(harness, "before_agent_start", { prompt: "tail", systemPrompt: "", systemPromptOptions: {} });
+    await emit(harness, "before_provider_request", { payload: {} });
+    await emit(harness, "message_start", { message });
+    harness.advance(100);
+    await emit(harness, "message_update", {
+      message,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: message },
+    });
+    for (const delta of ["b", "c", "d", "e", "f"]) {
+      harness.advance(100);
+      await emit(harness, "message_update", {
+        message,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
+      });
+    }
+    harness.advance(200);
+    await emit(harness, "message_end", { message });
+    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
+    await emit(harness, "agent_settled", {});
+
+    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
+    assert.equal(recordedRequest.streamMs, 700);
+    assert.equal(recordedRequest.tpsBranch, "primary");
+    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.7) < 0.01);
+  });
+
   test("uses turn_end as the generation boundary when OMP omits message_end", async () => {
     const harness = createHarness();
     const message = assistant({ usage: { ...usage, output: 11, cost: { ...usage.cost } } });
