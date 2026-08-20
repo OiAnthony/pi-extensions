@@ -1,10 +1,12 @@
 # pi extensions
 
-我为 [Pi](https://github.com/badlogic/pi-mono) 维护的扩展合集。
+这里收录了一些我在使用 [Pi](https://github.com/badlogic/pi-mono) 过程中写的扩展。
 
-这些扩展来自日常使用中的具体需求，分别作为独立 npm package 发布。部分扩展也支持 [OMP](https://omp.sh/) 或 [Herdr](https://github.com/ogulcancelik/herdr)。
+Pi 社区已经有不少优秀的 extensions。这个仓库只补充其中尚未覆盖、而我日常工作流确实需要的功能。它们主要跟着我的使用需求迭代，适合时也会支持 [OMP](https://omp.sh/) 或 [Herdr](https://github.com/ogulcancelik/herdr)。
 
-| Package | 功能 | 适用环境 |
+每个扩展都作为独立的 npm package 发布，可以按需安装。
+
+| Package | 功能 | 支持环境 |
 |---------|------|----------|
 | [pi-codex-compaction](packages/pi-codex-compaction) | 通过 Pi 原有 compaction lifecycle 使用 Codex Remote Compaction V2 | Pi |
 | [pi-command-history](packages/pi-command-history) | 按工作目录跨 session 保存并浏览命令历史 | Pi |
