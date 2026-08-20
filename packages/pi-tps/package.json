@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-tps",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Measure request, prompt, and session token throughput and latency in Pi and OMP.",
   "type": "module",
   "repository": {
