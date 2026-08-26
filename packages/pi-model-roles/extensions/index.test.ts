@@ -41,6 +41,10 @@ function createHarness(options: {
   settingsFiles?: Map<string, string>;
   globalSettingsPath?: string;
   projectSettingsPath?: string;
+  processArgs?: string[];
+  piProcessMarker?: boolean;
+  contextEntries?: Array<{ type: string }>;
+  scopedModels?: Model[];
 } = {}) {
   const roles = options.roles ?? {
     small: "test/small:off",
@@ -50,7 +54,7 @@ function createHarness(options: {
   const config = normalizeModelRoles({ roles, ...(options.cycleOrder ? { cycleOrder: options.cycleOrder } : {}) });
   const models = [small, normal, review, outside];
   const handlers = new Map<string, ShortcutHandler>();
-  const eventHandlers = new Map<string, (event: unknown, context: any) => void>();
+  const eventHandlers = new Map<string, (event: any, context: any) => Promise<void> | void>();
   const notifications: Array<{ message: string; level: string }> = [];
   const widgets: Array<{ id: string; value: "component" | undefined; placement?: string }> = [];
   const calls: string[] = [];
@@ -63,6 +67,10 @@ function createHarness(options: {
     isProjectTrusted: () => options.projectTrusted === true,
     model: options.initialModel ?? small,
     thinkingLevel: thinking,
+    scopedModels: options.scopedModels ?? [],
+    sessionManager: {
+      buildContextEntries: () => options.contextEntries ?? [],
+    },
     modelRegistry: {
       find: (provider: string, modelId: string) => models.find((model) => model.provider === provider && model.id === modelId),
       getApiKeyAndHeaders: async (model: Model) => options.unavailable?.has(model.id)
@@ -109,6 +117,8 @@ function createHarness(options: {
     },
     globalSettingsPath: options.globalSettingsPath ?? "/tmp/global-settings.json",
     projectSettingsPathFor: () => options.projectSettingsPath ?? "/tmp/project-settings.json",
+    processArgs: options.processArgs ?? [],
+    hasPiProcessMarker: () => options.piProcessMarker ?? true,
   };
   const pi = {
     registerShortcut: (shortcut: string, definition: { handler: ShortcutHandler }) => handlers.set(shortcut, definition.handler),
@@ -305,6 +315,117 @@ describe("model role extension", () => {
     harness.eventHandlers.get("session_shutdown")?.({}, harness.context);
     assert.deepEqual(harness.widgets.at(-1), { id: ROLE_WIDGET_ID, value: undefined });
     assert.equal(harness.timers.size, 0);
+  });
+});
+
+describe("default model role", () => {
+  test("applies a global default role to an empty startup session", async () => {
+    const globalSettingsPath = "/tmp/global-settings.json";
+    const harness = createHarness({
+      globalSettingsPath,
+      settingsFiles: new Map([[globalSettingsPath, JSON.stringify({ defaultModel: "@default" })]]),
+      contextEntries: [{ type: "model_change" }, { type: "thinking_level_change" }],
+      initialModel: small,
+      initialThinking: "off",
+    });
+
+    await harness.eventHandlers.get("session_start")?.({ reason: "startup" }, harness.context);
+
+    assert.equal(harness.context.model, normal);
+    assert.equal(harness.getThinking(), "medium");
+    assert.deepEqual(harness.calls, ["model:normal", "thinking:medium"]);
+  });
+
+  test("uses a trusted project default role over the global role for a new session", async () => {
+    const globalSettingsPath = "/tmp/global-settings.json";
+    const projectSettingsPath = "/tmp/project-settings.json";
+    const harness = createHarness({
+      globalSettingsPath,
+      projectSettingsPath,
+      projectTrusted: true,
+      settingsFiles: new Map([
+        [globalSettingsPath, JSON.stringify({ defaultModel: "@default" })],
+        [projectSettingsPath, JSON.stringify({ defaultModel: "@review" })],
+      ]),
+      initialModel: small,
+      initialThinking: "off",
+    });
+
+    await harness.eventHandlers.get("session_start")?.({ reason: "new" }, harness.context);
+
+    assert.equal(harness.context.model, review);
+    assert.equal(harness.getThinking(), "xhigh");
+    assert.deepEqual(harness.calls, ["model:review", "thinking:xhigh"]);
+  });
+
+  test("preserves session, scoped model, and explicit CLI model selections", async () => {
+    const settings = new Map([["/tmp/global-settings.json", JSON.stringify({ defaultModel: "@default" })]]);
+    const cases: Array<{
+      reason: "startup" | "reload" | "new" | "resume" | "fork";
+      contextEntries?: Array<{ type: string }>;
+      scopedModels?: Model[];
+      processArgs?: string[];
+    }> = [
+      { reason: "startup", contextEntries: [{ type: "message" }] },
+      { reason: "resume" },
+      { reason: "fork" },
+      { reason: "reload" },
+      { reason: "startup", scopedModels: [outside] },
+      { reason: "startup", processArgs: ["--model", "test/outside"] },
+    ];
+
+    for (const options of cases) {
+      const harness = createHarness({
+        settingsFiles: new Map(settings),
+        contextEntries: options.contextEntries ? [...options.contextEntries] : undefined,
+        scopedModels: options.scopedModels ? [...options.scopedModels] : undefined,
+        processArgs: options.processArgs ? [...options.processArgs] : undefined,
+      });
+      await harness.eventHandlers.get("session_start")?.({ reason: options.reason }, harness.context);
+      assert.deepEqual(harness.calls, [], `unexpected switch for ${JSON.stringify(options)}`);
+    }
+  });
+
+  test("preserves an explicit CLI thinking level while applying the role model", async () => {
+    const harness = createHarness({
+      settingsFiles: new Map([["/tmp/global-settings.json", JSON.stringify({ defaultModel: "@default" })]]),
+      processArgs: ["--thinking", "high"],
+      initialThinking: "high",
+    });
+
+    await harness.eventHandlers.get("session_start")?.({ reason: "startup" }, harness.context);
+
+    assert.equal(harness.context.model, normal);
+    assert.equal(harness.getThinking(), "high");
+    assert.deepEqual(harness.calls, ["model:normal"]);
+  });
+
+  test("does not override an explicit SDK model", async () => {
+    const harness = createHarness({
+      settingsFiles: new Map([["/tmp/global-settings.json", JSON.stringify({ defaultModel: "@default" })]]),
+      piProcessMarker: false,
+      initialModel: outside,
+      initialThinking: "high",
+    });
+
+    await harness.eventHandlers.get("session_start")?.({ reason: "startup" }, harness.context);
+
+    assert.equal(harness.context.model, outside);
+    assert.equal(harness.getThinking(), "high");
+    assert.deepEqual(harness.calls, []);
+  });
+
+  test("keeps Pi's fallback and reports an unresolved default role", async () => {
+    const harness = createHarness({
+      settingsFiles: new Map([["/tmp/global-settings.json", JSON.stringify({ defaultModel: "@missing" })]]),
+    });
+
+    await harness.eventHandlers.get("session_start")?.({ reason: "startup" }, harness.context);
+
+    assert.equal(harness.context.model, small);
+    assert.deepEqual(harness.calls, []);
+    assert.equal(harness.notifications.at(-1)?.level, "error");
+    assert.match(harness.notifications.at(-1)?.message ?? "", /Role "missing" is not configured/);
   });
 });
 

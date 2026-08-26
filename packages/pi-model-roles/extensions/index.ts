@@ -1,4 +1,9 @@
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  CONFIG_DIR_NAME,
+  getAgentDir,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,6 +43,8 @@ export interface RoleExtensionDependencies {
   settingsIO?: SettingsTextIO;
   globalSettingsPath?: string;
   projectSettingsPathFor?(cwd: string): string;
+  processArgs?: readonly string[];
+  hasPiProcessMarker?(): boolean;
 }
 
 const defaultDependencies: RoleExtensionDependencies = {
@@ -120,7 +127,7 @@ function persistStartupPackageOrder(
   const io = dependencies.settingsIO ?? defaultSettingsIO;
   const paths = [dependencies.globalSettingsPath ?? join(getAgentDir(), "settings.json")];
   if (ctx.isProjectTrusted()) {
-    paths.push(dependencies.projectSettingsPathFor?.(ctx.cwd) ?? join(ctx.cwd, ".pi", "settings.json"));
+    paths.push(dependencies.projectSettingsPathFor?.(ctx.cwd) ?? join(ctx.cwd, CONFIG_DIR_NAME, "settings.json"));
   }
   persistModelRolesBeforePowerline(paths, io);
 }
@@ -149,6 +156,54 @@ function persistSettingsPackages(path: string, io: SettingsTextIO): boolean {
   } catch {
     return false;
   }
+}
+
+interface SettingsValue {
+  present: boolean;
+  value?: unknown;
+}
+
+function readSettingsValue(path: string, key: string, io: SettingsTextIO): SettingsValue {
+  const text = io.readTextFile(path);
+  if (text === undefined) return { present: false };
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { present: false };
+    if (!Object.prototype.hasOwnProperty.call(parsed, key)) return { present: false };
+    return { present: true, value: (parsed as Record<string, unknown>)[key] };
+  } catch {
+    return { present: false };
+  }
+}
+
+function configuredDefaultRole(
+  ctx: ShortcutContext,
+  dependencies: RoleExtensionDependencies,
+): string | undefined {
+  const io = dependencies.settingsIO ?? defaultSettingsIO;
+  const globalPath = dependencies.globalSettingsPath ?? join(getAgentDir(), "settings.json");
+  let configured = readSettingsValue(globalPath, "defaultModel", io);
+  if (ctx.isProjectTrusted()) {
+    const projectPath = dependencies.projectSettingsPathFor?.(ctx.cwd) ?? join(ctx.cwd, CONFIG_DIR_NAME, "settings.json");
+    const projectConfigured = readSettingsValue(projectPath, "defaultModel", io);
+    if (projectConfigured.present) configured = projectConfigured;
+  }
+  if (typeof configured.value !== "string") return undefined;
+  const target = configured.value.trim();
+  return target.startsWith("@") ? target : undefined;
+}
+
+function hasCliOption(args: readonly string[], option: string): boolean {
+  return args.includes(option);
+}
+
+function hasConversation(ctx: ShortcutContext): boolean {
+  return ctx.sessionManager.buildContextEntries().some((entry) => (
+    entry.type === "message"
+    || entry.type === "custom_message"
+    || entry.type === "compaction"
+    || entry.type === "branch_summary"
+  ));
 }
 
 function modelKey(model: ModelLike | undefined): string | undefined {
@@ -343,6 +398,45 @@ export default function register(
     }
   };
 
+  const applyDefaultRole = async (
+    event: { reason: "startup" | "reload" | "new" | "resume" | "fork" },
+    ctx: ShortcutContext,
+  ): Promise<void> => {
+    if (event.reason !== "startup" && event.reason !== "new") return;
+    const hasPiProcessMarker = dependencies.hasPiProcessMarker?.() ?? process.env.PI_CODING_AGENT === "true";
+    if (!hasPiProcessMarker) return;
+    if (hasConversation(ctx) || ctx.scopedModels.length > 0) return;
+    const processArgs = dependencies.processArgs ?? process.argv.slice(1);
+    if (hasCliOption(processArgs, "--model")) return;
+
+    const target = configuredDefaultRole(ctx, dependencies);
+    if (!target) return;
+    const resolution = await resolveModelTarget({
+      target,
+      currentModel: ctx.model,
+      modelRegistry: ctx.modelRegistry as unknown as ModelRegistryLike<HostModel>,
+      config,
+      allowCurrentFallback: false,
+    });
+    if (!isResolvedModelTarget(resolution)) {
+      const reason = resolution.issues.at(-1)?.message ?? "The role could not be resolved.";
+      ctx.ui.notify(`Unable to apply default model role ${target}: ${reason}`, "error");
+      return;
+    }
+    if (!await pi.setModel(resolution.model)) {
+      ctx.ui.notify(`Unable to apply default model role ${target}.`, "error");
+      return;
+    }
+    if (resolution.thinkingLevel !== undefined && !hasCliOption(processArgs, "--thinking")) {
+      pi.setThinkingLevel(resolution.thinkingLevel);
+    }
+    active = {
+      name: resolution.role ?? target.slice(1),
+      modelId: resolution.modelId,
+      thinkingLevel: pi.getThinkingLevel(),
+    };
+  };
+
   pi.registerShortcut("ctrl+p", {
     description: "Cycle to the next model role",
     handler: async (ctx) => cycle(ctx, 1),
@@ -351,7 +445,7 @@ export default function register(
     description: "Cycle to the previous model role",
     handler: async (ctx) => cycle(ctx, -1),
   });
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     active = undefined;
     hideRoleTrack();
     try {
@@ -360,6 +454,11 @@ export default function register(
       // Keep session startup intact if settings I/O fails.
     }
     installWidget(ctx);
+    try {
+      await applyDefaultRole(event, ctx);
+    } catch {
+      ctx.ui.notify("Unable to apply the default model role.", "error");
+    }
   });
   pi.on("session_shutdown", (_event, ctx) => removeWidget(ctx));
 }

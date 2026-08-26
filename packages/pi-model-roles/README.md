@@ -34,6 +34,16 @@ pi install npm:@oipsanthony/pi-model-roles
 
 可用 thinking level 为 `off`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`。
 
+Pi CLI 的 `settings.json` 也可以把角色用作默认模型：
+
+```json
+{
+  "defaultModel": "@default"
+}
+```
+
+该角色会在空白的启动会话或新会话中延迟解析，因此角色自身决定 provider，不需要设置 `defaultProvider`。恢复、分叉和 reload 会话不会重新应用默认角色；显式 `--model`、`--models` / `enabledModels` 的优先级更高，显式 `--thinking` 也会保留。此集成仅在存在 `PI_CODING_AGENT=true` process marker 时生效；Pi CLI / RPC 入口会设置该 marker，SDK 默认不会设置。由于子进程会继承 marker，从 Pi shell 启动的 SDK 进程应禁用该 extension 或避免配置角色形式的 `defaultModel`，并直接使用 `resolveModelTarget()`，以免覆盖 `createAgentSession({ model })` 的显式选择。
+
 `cycleOrder` 决定快捷键切换顺序。省略时按 `roles` 的声明顺序切换。修改配置后执行 `/reload`。
 
 ## 使用
