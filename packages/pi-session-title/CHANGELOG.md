@@ -1,5 +1,12 @@
 # @oipsanthony/pi-session-title
 
+## 0.3.4
+
+### Patch Changes
+
+- Updated dependencies [9c91578]
+  - @oipsanthony/pi-model-roles@0.2.0
+
 ## 0.3.3
 
 ### Patch Changes

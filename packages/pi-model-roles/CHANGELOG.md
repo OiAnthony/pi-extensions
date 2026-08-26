@@ -1,5 +1,11 @@
 # @oipsanthony/pi-model-roles
 
+## 0.2.0
+
+### Minor Changes
+
+- 9c91578: 支持在 Pi CLI 的 `settings.json` 中使用模型角色作为 `defaultModel`，并保留显式 CLI、模型 scope、已有会话和 SDK model 的优先级。
+
 ## 0.1.3
 
 ### Patch Changes
