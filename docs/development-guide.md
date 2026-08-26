@@ -8,6 +8,7 @@
 - 只在仓库根目录执行 `bun install` 安装依赖。
 - 根目录的 `bun.lock` 是 workspace 唯一的 lockfile。
 - 每个 package 必须自包含。其 manifest、README、测试、发布文件和许可证应足以独立说明该 package，不依赖仓库专用文档。
+- package 间的运行时依赖必须使用已发布版本的 SemVer range；不要使用 `workspace:` 协议，因为它会原样进入 npm metadata，导致消费者安装失败。只要 range 匹配当前 workspace 版本，Bun 仍会在本地链接 workspace package。
 - 公开 package 使用 npm scope `@oipsanthony`。
 
 ## 新建 Package

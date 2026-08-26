@@ -37,7 +37,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@oipsanthony/pi-model-roles": "workspace:*"
+    "@oipsanthony/pi-model-roles": "^0.2.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 const packagesDirectory = new URL("../packages/", import.meta.url);
 const packageEntries = await readdir(packagesDirectory, { withFileTypes: true });
+const publishedDependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 let failed = false;
 
 for (const entry of packageEntries) {
@@ -11,9 +12,22 @@ for (const entry of packageEntries) {
   const packageDirectory = join(packagesDirectory.pathname, entry.name);
   const manifest = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
   if (manifest.private) continue;
+  let packageFailed = false;
 
   if (!Array.isArray(manifest.keywords) || !manifest.keywords.includes("pi-package")) {
     console.error(`${manifest.name} must include "pi-package" in package.json keywords.`);
+    packageFailed = true;
+  }
+
+  for (const field of publishedDependencyFields) {
+    for (const [name, range] of Object.entries(manifest[field] ?? {})) {
+      if (typeof range === "string" && range.startsWith("workspace:")) {
+        console.error(`${manifest.name} cannot publish ${field}.${name} with range ${range}.`);
+        packageFailed = true;
+      }
+    }
+  }
+  if (packageFailed) {
     failed = true;
     continue;
   }
