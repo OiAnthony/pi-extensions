@@ -1,19 +1,14 @@
-/**
- * Derived from monotykamary/pi-tps, originally from badlogic/pi-mono.
- * See ../NOTICE and ../LICENSE for attribution and license terms.
- * SPDX-License-Identifier: MIT
- */
 import type { StopReason, Usage } from "@earendil-works/pi-ai";
 
 interface SessionManagerView {
   getBranch(): Array<{ type: string; customType?: string; data?: unknown }>;
 }
 
-export const REQUEST_ENTRY_TYPE = "pi-tps/request/v2";
-export const PROMPT_ENTRY_TYPE = "pi-tps/prompt/v2";
+export const REQUEST_ENTRY_TYPE = "pi-tps/request/v3";
+export const PROMPT_ENTRY_TYPE = "pi-tps/prompt/v3";
 export const PROMPT_DISPLAY_MESSAGE_TYPE = "pi-tps/prompt-display/v1";
-const LEGACY_REQUEST_ENTRY_TYPE = "pi-tps/request/v1";
-const LEGACY_PROMPT_ENTRY_TYPE = "pi-tps/prompt/v1";
+const LEGACY_REQUEST_ENTRY_TYPES = new Set(["pi-tps/request/v1", "pi-tps/request/v2"]);
+const LEGACY_PROMPT_ENTRY_TYPES = new Set(["pi-tps/prompt/v1", "pi-tps/prompt/v2"]);
 
 export interface PromptDisplayData {
   version: 1;
@@ -36,31 +31,9 @@ export interface TokenUsage {
   };
 }
 
-export type TpsBranch = "primary" | "fallback" | "unavailable";
-export type TpsUnavailableReason =
-  | "no-output"
-  | "insufficient-updates"
-  | "insufficient-duration"
-  | "implausible-rate";
-
-export interface TpsMeasurementInput {
-  outputTokens: number;
-  generationMs: number | null;
-  streamMs: number | null;
-  postFirstUpdateCount: number;
-  stallMs: number;
-  forceFallback?: boolean;
-}
-
-export interface TpsMeasurement {
-  tps: number | null;
-  effectiveMs: number | null;
-  branch: TpsBranch;
-  unavailableReason?: TpsUnavailableReason;
-}
-
+/** One completed provider request. Timings are observed facts, not inferred decode time. */
 export interface RequestMetrics {
-  version: 1 | 2;
+  version: 3;
   id: string;
   promptId: string;
   sequence: number;
@@ -72,23 +45,19 @@ export interface RequestMetrics {
   responseStatus?: number;
   usage: TokenUsage;
   headersMs: number | null;
+  /** Provider request start to first non-empty content event. */
   ttftMs: number | null;
-  generationMs: number | null;
-  streamMs?: number | null;
-  postFirstUpdateCount?: number;
-  effectiveGenerationMs?: number | null;
-  tpsBranch?: TpsBranch;
-  tpsUnavailableReason?: TpsUnavailableReason;
-  stallMs: number;
-  stallCount: number;
+  /** Assistant message start to completion, when both lifecycle events exist. */
+  responseMs: number | null;
+  /** Provider request start to turn completion. */
   totalMs: number;
-  outputTps: number | null;
   stopReason: StopReason;
   error?: string;
 }
 
+/** One agent run, from before_agent_start until agent_end/agent_settled. */
 export interface PromptMetrics {
-  version: 1 | 2;
+  version: 3;
   id: string;
   startedAt: number;
   completedAt: number;
@@ -96,15 +65,8 @@ export interface PromptMetrics {
   requestCount: number;
   usage: TokenUsage;
   modelMs: number;
-  generationMs: number;
-  stallMs: number;
-  stallCount: number;
+  /** TTFT of the first provider request. */
   ttftMs: number | null;
-  activeTps: number | null;
-  effectiveTps: number | null;
-  effectiveGenerationMs?: number | null;
-  tpsBranch?: TpsBranch;
-  tpsUnavailableReason?: TpsUnavailableReason;
   status: "completed" | "error" | "aborted";
 }
 
@@ -114,13 +76,10 @@ export interface SessionMetrics {
   usage: TokenUsage;
   processingMs: number;
   modelMs: number;
-  generationMs: number;
-  activeTps: number | null;
   effectiveTps: number | null;
   ttftP50Ms: number | null;
   ttftP95Ms: number | null;
-  requestTpsP50: number | null;
-  requestTpsP95: number | null;
+  ttftSamples: number;
 }
 
 export interface RestoredMetrics {
@@ -172,73 +131,10 @@ export function addUsage(target: TokenUsage, source: TokenUsage): TokenUsage {
   };
 }
 
+/** Effective output throughput over an observed wall-clock interval. */
 export function rate(tokens: number, durationMs: number): number | null {
   if (tokens <= 0 || durationMs <= 0) return null;
   return tokens / (durationMs / 1000);
-}
-
-/**
- * Measure generation TPS using a reliable streaming window when available,
- * then fall back to the full generation window. Unidentifiable or implausible
- * measurements return null instead of reporting a misleading rate.
- */
-export function measureTps(input: TpsMeasurementInput): TpsMeasurement {
-  const { outputTokens, generationMs, streamMs, postFirstUpdateCount, forceFallback = false } = input;
-  if (outputTokens <= 0) {
-    return { tps: null, effectiveMs: null, branch: "unavailable", unavailableReason: "no-output" };
-  }
-
-  const stallMs = Math.max(input.stallMs, 0);
-  const MIN_STREAM_UPDATES = 5;
-  const MIN_INTER_CHUNK_MS = 1;
-  const MIN_GENERATION_MS = 200;
-  const STALL_DOMINANCE_RATIO = 0.85;
-  const STALL_REDUCTION_DENOM = 2;
-  const MAX_PLAUSIBLE_TPS = 10_000;
-  const averageGapMs = streamMs !== null && postFirstUpdateCount > 0
-    ? streamMs / postFirstUpdateCount
-    : 0;
-
-  let effectiveMs: number;
-  let branch: Exclude<TpsBranch, "unavailable">;
-  if (!forceFallback
-    && streamMs !== null
-    && postFirstUpdateCount >= MIN_STREAM_UPDATES
-    && averageGapMs >= MIN_INTER_CHUNK_MS
-    && streamMs - stallMs >= MIN_GENERATION_MS
-    && stallMs < streamMs - stallMs) {
-    effectiveMs = streamMs - stallMs;
-    branch = "primary";
-  } else if (generationMs !== null
-    && generationMs >= MIN_GENERATION_MS
-    && postFirstUpdateCount >= 2) {
-    const activeMs = generationMs - stallMs;
-    effectiveMs = activeMs < MIN_GENERATION_MS || stallMs > generationMs * STALL_DOMINANCE_RATIO
-      ? Math.max(generationMs - stallMs / STALL_REDUCTION_DENOM, MIN_GENERATION_MS)
-      : Math.max(activeMs, MIN_GENERATION_MS);
-    branch = "fallback";
-  } else {
-    const unavailableReason = postFirstUpdateCount < 2 ? "insufficient-updates" : "insufficient-duration";
-    return { tps: null, effectiveMs: null, branch: "unavailable", unavailableReason };
-  }
-
-  const tps = outputTokens / (effectiveMs / 1000);
-  if (tps > MAX_PLAUSIBLE_TPS) {
-    return { tps: null, effectiveMs: null, branch: "unavailable", unavailableReason: "implausible-rate" };
-  }
-  return { tps, effectiveMs, branch };
-}
-
-/** @deprecated Use measureTps() with stream reliability data. */
-export function rateAfterStall(tokens: number, generationMs: number | null, stallMs: number): number | null {
-  return measureTps({
-    outputTokens: tokens,
-    generationMs,
-    streamMs: null,
-    postFirstUpdateCount: 2,
-    stallMs,
-    forceFallback: true,
-  }).tps;
 }
 
 export function percentile(values: number[], quantile: number): number | null {
@@ -256,39 +152,16 @@ export function aggregatePrompt(
   requests: RequestMetrics[],
 ): PromptMetrics {
   const usage = requests.reduce((total, request) => addUsage(total, request.usage), emptyUsage());
-  const generationMs = requests.reduce((total, request) => total + (request.generationMs ?? 0), 0);
-  const stallMs = requests.reduce((total, request) => total + request.stallMs, 0);
-  const stallCount = requests.reduce((total, request) => total + request.stallCount, 0);
   const modelMs = requests.reduce((total, request) => total + request.totalMs, 0);
   const first = requests[0];
   const last = requests.at(-1);
-  const outputRequests = requests.filter((request) => request.usage.output > 0);
-  const allMeasurable = outputRequests.length > 0
-    && outputRequests.every((request) => request.outputTps !== null && request.effectiveGenerationMs != null);
-  const effectiveMs = allMeasurable
-    ? outputRequests.reduce((total, request) => total + (request.effectiveGenerationMs ?? 0), 0)
-    : null;
-  const hasFallback = outputRequests.some((request) => request.tpsBranch === "fallback");
-  const unavailableRequest = outputRequests.find((request) => request.tpsBranch === "unavailable");
-  const measurement: TpsMeasurement = effectiveMs === null
-    ? {
-        tps: null,
-        effectiveMs: null,
-        branch: "unavailable",
-        unavailableReason: unavailableRequest?.tpsUnavailableReason ?? "insufficient-updates",
-      }
-    : {
-        tps: rate(usage.output, effectiveMs),
-        effectiveMs,
-        branch: hasFallback ? "fallback" : "primary",
-      };
   const status = last?.stopReason === "aborted"
     ? "aborted"
     : last?.stopReason === "error"
       ? "error"
       : "completed";
   return {
-    version: 2,
+    version: 3,
     id,
     startedAt,
     completedAt,
@@ -296,15 +169,7 @@ export function aggregatePrompt(
     requestCount: requests.length,
     usage,
     modelMs,
-    generationMs,
-    stallMs,
-    stallCount,
     ttftMs: first?.ttftMs ?? null,
-    activeTps: measurement.tps,
-    effectiveTps: rate(usage.output, durationMs),
-    effectiveGenerationMs: measurement.effectiveMs,
-    tpsBranch: measurement.branch,
-    ...(measurement.unavailableReason === undefined ? {} : { tpsUnavailableReason: measurement.unavailableReason }),
     status,
   };
 }
@@ -313,33 +178,26 @@ export function aggregateSession(prompts: PromptMetrics[], requests: RequestMetr
   const usage = prompts.reduce((total, prompt) => addUsage(total, prompt.usage), emptyUsage());
   const processingMs = prompts.reduce((total, prompt) => total + prompt.durationMs, 0);
   const modelMs = prompts.reduce((total, prompt) => total + prompt.modelMs, 0);
-  const generationMs = prompts.reduce((total, prompt) => total + prompt.generationMs, 0);
-  const ttfts = prompts.flatMap((prompt) => prompt.ttftMs === null ? [] : [prompt.ttftMs]);
-  const requestRates = requests.flatMap((request) => request.outputTps === null ? [] : [request.outputTps]);
-  const outputPrompts = prompts.filter((prompt) => prompt.usage.output > 0);
-  const allMeasurable = outputPrompts.length > 0
-    && outputPrompts.every((prompt) => prompt.activeTps !== null && prompt.effectiveGenerationMs != null);
-  const activeMs = allMeasurable
-    ? outputPrompts.reduce((total, prompt) => total + (prompt.effectiveGenerationMs ?? 0), 0)
-    : 0;
+  const ttfts = requests.flatMap((request) => request.ttftMs === null ? [] : [request.ttftMs]);
   return {
     promptCount: prompts.length,
-    requestCount: requests.length,
+    requestCount: prompts.reduce((total, prompt) => total + prompt.requestCount, 0),
     usage,
     processingMs,
     modelMs,
-    generationMs,
-    activeTps: allMeasurable ? rate(usage.output, activeMs) : null,
     effectiveTps: rate(usage.output, processingMs),
     ttftP50Ms: percentile(ttfts, 0.5),
     ttftP95Ms: percentile(ttfts, 0.95),
-    requestTpsP50: percentile(requestRates, 0.5),
-    requestTpsP95: percentile(requestRates, 0.95),
+    ttftSamples: ttfts.length,
   };
 }
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNullableFiniteNumber(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
 }
 
 function isTokenUsage(value: unknown): value is TokenUsage {
@@ -351,46 +209,114 @@ function isTokenUsage(value: unknown): value is TokenUsage {
     && isFiniteNumber(usage.cacheWrite)
     && isFiniteNumber(usage.totalTokens)
     && Boolean(usage.cost)
+    && isFiniteNumber(usage.cost?.input)
+    && isFiniteNumber(usage.cost?.output)
+    && isFiniteNumber(usage.cost?.cacheRead)
+    && isFiniteNumber(usage.cost?.cacheWrite)
     && isFiniteNumber(usage.cost?.total);
+}
+
+function isPromptStatus(value: unknown): value is PromptMetrics["status"] {
+  return value === "completed" || value === "error" || value === "aborted";
 }
 
 export function isRequestMetrics(value: unknown): value is RequestMetrics {
   if (!value || typeof value !== "object") return false;
   const request = value as Partial<RequestMetrics>;
-  const baseValid = (request.version === 1 || request.version === 2)
+  return request.version === 3
     && typeof request.id === "string"
     && typeof request.promptId === "string"
     && isFiniteNumber(request.sequence)
+    && typeof request.provider === "string"
+    && typeof request.model === "string"
     && isFiniteNumber(request.startedAt)
     && isFiniteNumber(request.completedAt)
+    && isTokenUsage(request.usage)
+    && isNullableFiniteNumber(request.headersMs)
+    && isNullableFiniteNumber(request.ttftMs)
+    && isNullableFiniteNumber(request.responseMs)
     && isFiniteNumber(request.totalMs)
-    && isFiniteNumber(request.stallMs)
-    && isFiniteNumber(request.stallCount)
-    && isTokenUsage(request.usage);
-  if (!baseValid) return false;
-  if (request.version === 1) return true;
-  return (request.streamMs === null || isFiniteNumber(request.streamMs))
-    && isFiniteNumber(request.postFirstUpdateCount)
-    && (request.effectiveGenerationMs === null || isFiniteNumber(request.effectiveGenerationMs))
-    && (request.tpsBranch === "primary" || request.tpsBranch === "fallback" || request.tpsBranch === "unavailable");
+    && typeof request.stopReason === "string";
 }
 
 export function isPromptMetrics(value: unknown): value is PromptMetrics {
   if (!value || typeof value !== "object") return false;
   const prompt = value as Partial<PromptMetrics>;
-  const baseValid = (prompt.version === 1 || prompt.version === 2)
+  return prompt.version === 3
     && typeof prompt.id === "string"
     && isFiniteNumber(prompt.startedAt)
     && isFiniteNumber(prompt.completedAt)
     && isFiniteNumber(prompt.durationMs)
     && isFiniteNumber(prompt.requestCount)
-    && isFiniteNumber(prompt.stallMs)
-    && isFiniteNumber(prompt.stallCount)
-    && isTokenUsage(prompt.usage);
-  if (!baseValid) return false;
-  if (prompt.version === 1) return true;
-  return (prompt.effectiveGenerationMs === null || isFiniteNumber(prompt.effectiveGenerationMs))
-    && (prompt.tpsBranch === "primary" || prompt.tpsBranch === "fallback" || prompt.tpsBranch === "unavailable");
+    && isTokenUsage(prompt.usage)
+    && isFiniteNumber(prompt.modelMs)
+    && isNullableFiniteNumber(prompt.ttftMs)
+    && isPromptStatus(prompt.status);
+}
+
+function normalizeLegacyRequest(value: unknown): RequestMetrics | null {
+  if (!value || typeof value !== "object") return null;
+  const request = value as Record<string, unknown>;
+  if ((request.version !== 1 && request.version !== 2)
+    || typeof request.id !== "string"
+    || typeof request.promptId !== "string"
+    || !isFiniteNumber(request.sequence)
+    || typeof request.provider !== "string"
+    || typeof request.model !== "string"
+    || !isFiniteNumber(request.startedAt)
+    || !isFiniteNumber(request.completedAt)
+    || !isTokenUsage(request.usage)
+    || !isNullableFiniteNumber(request.headersMs)
+    || !isNullableFiniteNumber(request.ttftMs)
+    || !isFiniteNumber(request.totalMs)
+    || typeof request.stopReason !== "string") return null;
+  const generationMs = isNullableFiniteNumber(request.generationMs) ? request.generationMs : null;
+  return {
+    version: 3,
+    id: request.id,
+    promptId: request.promptId,
+    sequence: request.sequence,
+    provider: request.provider,
+    model: request.model,
+    ...(typeof request.api === "string" ? { api: request.api } : {}),
+    startedAt: request.startedAt,
+    completedAt: request.completedAt,
+    ...(isFiniteNumber(request.responseStatus) ? { responseStatus: request.responseStatus } : {}),
+    usage: request.usage,
+    headersMs: request.headersMs,
+    ttftMs: request.ttftMs,
+    responseMs: generationMs,
+    totalMs: request.totalMs,
+    stopReason: request.stopReason as StopReason,
+    ...(typeof request.error === "string" ? { error: request.error } : {}),
+  };
+}
+
+function normalizeLegacyPrompt(value: unknown): PromptMetrics | null {
+  if (!value || typeof value !== "object") return null;
+  const prompt = value as Record<string, unknown>;
+  if ((prompt.version !== 1 && prompt.version !== 2)
+    || typeof prompt.id !== "string"
+    || !isFiniteNumber(prompt.startedAt)
+    || !isFiniteNumber(prompt.completedAt)
+    || !isFiniteNumber(prompt.durationMs)
+    || !isFiniteNumber(prompt.requestCount)
+    || !isTokenUsage(prompt.usage)
+    || !isFiniteNumber(prompt.modelMs)
+    || !isNullableFiniteNumber(prompt.ttftMs)
+    || !isPromptStatus(prompt.status)) return null;
+  return {
+    version: 3,
+    id: prompt.id,
+    startedAt: prompt.startedAt,
+    completedAt: prompt.completedAt,
+    durationMs: prompt.durationMs,
+    requestCount: prompt.requestCount,
+    usage: prompt.usage,
+    modelMs: prompt.modelMs,
+    ttftMs: prompt.ttftMs,
+    status: prompt.status,
+  };
 }
 
 export function isPromptDisplayData(value: unknown): value is PromptDisplayData {
@@ -407,10 +333,16 @@ export function restoreMetrics(sessionManager: SessionManagerView): RestoredMetr
   const requests: RequestMetrics[] = [];
   for (const entry of sessionManager.getBranch()) {
     if (entry.type !== "custom") continue;
-    if ((entry.customType === REQUEST_ENTRY_TYPE || entry.customType === LEGACY_REQUEST_ENTRY_TYPE)
-      && isRequestMetrics(entry.data)) requests.push(entry.data);
-    if ((entry.customType === PROMPT_ENTRY_TYPE || entry.customType === LEGACY_PROMPT_ENTRY_TYPE)
-      && isPromptMetrics(entry.data)) prompts.push(entry.data);
+    if (entry.customType === REQUEST_ENTRY_TYPE && isRequestMetrics(entry.data)) requests.push(entry.data);
+    else if (entry.customType && LEGACY_REQUEST_ENTRY_TYPES.has(entry.customType)) {
+      const request = normalizeLegacyRequest(entry.data);
+      if (request) requests.push(request);
+    }
+    if (entry.customType === PROMPT_ENTRY_TYPE && isPromptMetrics(entry.data)) prompts.push(entry.data);
+    else if (entry.customType && LEGACY_PROMPT_ENTRY_TYPES.has(entry.customType)) {
+      const prompt = normalizeLegacyPrompt(entry.data);
+      if (prompt) prompts.push(prompt);
+    }
   }
   return { prompts, requests };
 }
@@ -434,28 +366,31 @@ export function formatRate(value: number | null): string {
   return value === null ? "n/a" : value.toFixed(1);
 }
 
-export function promptStatus(prompt: PromptMetrics, sessionProcessingMs = prompt.durationMs): string {
-  const parts = [
-    `TPS ${formatRate(prompt.activeTps)} tok/s`,
+export function promptStatus(prompt: PromptMetrics): string {
+  const requestLabel = prompt.requestCount === 1 ? "1 request" : `${prompt.requestCount} requests`;
+  return [
+    formatDuration(prompt.durationMs),
+    `${formatRate(rate(prompt.usage.output, prompt.durationMs))} tok/s`,
+    requestLabel,
     `TTFT ${formatDuration(prompt.ttftMs)}`,
     `in ${formatTokens(prompt.usage.input)}`,
     `out ${formatTokens(prompt.usage.output)}`,
-  ];
-  if (prompt.stallMs > 0) parts.push(`stall ${formatDuration(prompt.stallMs)}×${prompt.stallCount}`);
-  const duration = formatDuration(prompt.durationMs);
-  parts.push(sessionProcessingMs === prompt.durationMs
-    ? duration
-    : `${formatDuration(sessionProcessingMs)}(+${duration})`);
-  return parts.join(" · ");
+  ].join(" · ");
 }
 
-export function renderReport(prompts: PromptMetrics[]): string {
+export function renderReport(prompts: PromptMetrics[], requests: RequestMetrics[] = []): string {
   if (prompts.length === 0) return "No completed prompts.";
-  const lines: string[] = [];
-  let sessionProcessingMs = 0;
-  prompts.forEach((prompt) => {
-    sessionProcessingMs += prompt.durationMs;
-    lines.push(promptStatus(prompt, sessionProcessingMs));
-  });
+  const lines = prompts.map(promptStatus);
+  const session = aggregateSession(prompts, requests);
+  const promptLabel = session.promptCount === 1 ? "1 prompt" : `${session.promptCount} prompts`;
+  const requestLabel = session.requestCount === 1 ? "1 request" : `${session.requestCount} requests`;
+  lines.push(
+    `${promptLabel} · ${requestLabel} · ${formatRate(session.effectiveTps)} tok/s · processing ${formatDuration(session.processingMs)}`,
+  );
+  if (session.ttftSamples > 0) {
+    lines.push(
+      `TTFT p50 ${formatDuration(session.ttftP50Ms)} · p95 ${formatDuration(session.ttftP95Ms)} · n=${session.ttftSamples}`,
+    );
+  }
   return lines.join("\n");
 }

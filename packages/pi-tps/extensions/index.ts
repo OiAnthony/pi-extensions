@@ -14,7 +14,6 @@ import {
   copyUsage,
   emptyUsage,
   isPromptDisplayData,
-  measureTps,
   promptStatus,
   renderReport,
   restoreMetrics,
@@ -43,17 +42,9 @@ interface ActiveRequest {
   messageStartMono: number;
   headersMono?: number;
   firstDeltaMono?: number;
-  lastUpdateMono?: number;
-  postFirstUpdateCount: number;
-  stallMs: number;
-  stallCount: number;
-  inStall: boolean;
   messageEndMono?: number;
   responseStatus?: number;
 }
-
-/** Minimum gap between stream updates to count as an inference stall (ms). */
-const STALL_THRESHOLD_MS = 500;
 
 interface ActivePrompt {
   id: string;
@@ -84,7 +75,7 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   let promptCounter = 0;
   let active: ActivePrompt | undefined;
   let prompts: PromptMetrics[] = [];
-  let sessionProcessingMs = 0;
+  let requests: RequestMetrics[] = [];
 
   pi.registerMessageRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (message, _options, theme) => {
     if (!isPromptDisplayData(message.details)) return undefined;
@@ -102,7 +93,7 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   const restore = (ctx: ExtensionContext): void => {
     const restored = restoreMetrics(ctx.sessionManager);
     prompts = restored.prompts;
-    sessionProcessingMs = prompts.reduce((total, prompt) => total + prompt.durationMs, 0);
+    requests = restored.requests;
     active = undefined;
   };
 
@@ -113,26 +104,12 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   ): RequestMetrics => {
     const completedMono = clock.now();
     const completedAt = clock.wallNow();
-    const generationMs = request.messageEndMono === undefined
+    const responseMs = request.messageEndMono === undefined
       ? null
       : Math.max(0, request.messageEndMono - request.messageStartMono);
-    // usage.output covers the completed response, so its TPS denominator must
-    // retain the tail from the last content delta through response completion.
-    const streamMs = request.postFirstUpdateCount > 0
-      && request.firstDeltaMono !== undefined
-      && request.messageEndMono !== undefined
-      ? Math.max(0, request.messageEndMono - request.firstDeltaMono)
-      : null;
     const usage = message ? copyUsage(message.usage) : emptyUsage();
-    const measurement = measureTps({
-      outputTokens: usage.output,
-      generationMs,
-      streamMs,
-      postFirstUpdateCount: request.postFirstUpdateCount,
-      stallMs: request.stallMs,
-    });
     const metrics: RequestMetrics = {
-      version: 2,
+      version: 3,
       id: request.id,
       promptId: active?.id ?? request.id.split(":")[0] ?? "unknown",
       sequence: request.sequence,
@@ -145,18 +122,8 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       usage,
       headersMs: request.headersMono === undefined ? null : Math.max(0, request.headersMono - request.startedMono),
       ttftMs: request.firstDeltaMono === undefined ? null : Math.max(0, request.firstDeltaMono - request.startedMono),
-      generationMs,
-      streamMs,
-      postFirstUpdateCount: request.postFirstUpdateCount,
-      effectiveGenerationMs: measurement.effectiveMs,
-      tpsBranch: measurement.branch,
-      ...(measurement.unavailableReason === undefined
-        ? {}
-        : { tpsUnavailableReason: measurement.unavailableReason }),
-      stallMs: request.stallMs,
-      stallCount: request.stallCount,
+      responseMs,
       totalMs: Math.max(0, completedMono - request.startedMono),
-      outputTps: measurement.tps,
       stopReason: message?.stopReason ?? fallbackStopReason,
       ...(message?.errorMessage ? { error: message.errorMessage } : {}),
     };
@@ -201,10 +168,6 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
       startedAt: clock.wallNow(),
       startedMono: clock.now(),
       messageStartMono: clock.now(),
-      postFirstUpdateCount: 0,
-      stallMs: 0,
-      stallCount: 0,
-      inStall: false,
     };
     return undefined;
   });
@@ -218,35 +181,13 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   pi.on("message_start", (event) => {
     if (!active?.currentRequest || !isAssistantMessage(event.message)) return;
     active.currentRequest.messageStartMono = clock.now();
-    active.currentRequest.lastUpdateMono = undefined;
-    active.currentRequest.inStall = false;
   });
 
   pi.on("message_update", (event) => {
     const request = active?.currentRequest;
     if (!request) return;
     if (!isFirstContentDelta(event.assistantMessageEvent)) return;
-    const now = clock.now();
-    // First content delta: capture TTFT and seed the stream gap clock. The gap
-    // from request start to this update is provider/network latency, not a stall.
-    if (request.firstDeltaMono === undefined) {
-      request.firstDeltaMono = now;
-      request.lastUpdateMono = now;
-      return;
-    }
-    request.postFirstUpdateCount += 1;
-    // Subsequent deltas: gaps >= STALL_THRESHOLD_MS are inference stalls (GPU or
-    // server queueing). The full gap counts as stall time; consecutive stalled
-    // updates merge into one stall event, mirroring the original pi-tps.
-    const gap = now - (request.lastUpdateMono ?? now);
-    if (gap >= STALL_THRESHOLD_MS) {
-      if (!request.inStall) request.stallCount += 1;
-      request.inStall = true;
-      request.stallMs += gap;
-    } else {
-      request.inStall = false;
-    }
-    request.lastUpdateMono = now;
+    request.firstDeltaMono ??= clock.now();
   });
 
   pi.on("message_end", (event) => {
@@ -277,12 +218,12 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
     );
     for (const request of finished.requests) pi.appendEntry(REQUEST_ENTRY_TYPE, request);
     pi.appendEntry(PROMPT_ENTRY_TYPE, prompt);
+    requests.push(...finished.requests);
     prompts.push(prompt);
-    sessionProcessingMs += prompt.durationMs;
     active = undefined;
     const displayData = {
       version: 1,
-      line: promptStatus(prompt, sessionProcessingMs),
+      line: promptStatus(prompt),
     } satisfies PromptDisplayData;
     if (supportsEntryRenderer) {
       pi.appendEntry(PROMPT_DISPLAY_MESSAGE_TYPE, displayData);
@@ -299,7 +240,7 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
   pi.registerCommand("tps", {
     description: "Show completed prompt token throughput history",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(renderReport(prompts), "info");
+      ctx.ui.notify(renderReport(prompts, requests), "info");
     },
   });
 }
