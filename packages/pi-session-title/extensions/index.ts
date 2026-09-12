@@ -8,6 +8,7 @@ import {
 import {
   STATE_ENTRY_TYPE,
   buildNamingContext,
+  cleanTitle,
   configuredModelLabel,
   createState,
   extractCompletedExchanges,
@@ -34,6 +35,22 @@ type SessionContext = ExtensionContext & {
     getSessionName?(): string | undefined;
   };
 };
+
+type ExplicitTitleMode = "suggest" | "fix";
+
+const INDICATOR_WIDGET_KEY = "pi-session-title";
+
+function parseExplicitTitleCommand(args: string): { mode: ExplicitTitleMode; title: string } | undefined {
+  const match = /^\s*(suggest|fix)\s+([\s\S]+?)\s*$/u.exec(args);
+  if (!match) return undefined;
+
+  const mode = match[1] as ExplicitTitleMode;
+  const rawTitle = match[2]!;
+  const quote = rawTitle[0];
+  if (quote !== '"' && quote !== "'") return { mode, title: rawTitle };
+  if (rawTitle.length < 2 || rawTitle.at(-1) !== quote) return undefined;
+  return { mode, title: rawTitle.slice(1, -1) };
+}
 
 export default function register(
   pi: ExtensionAPI,
@@ -88,6 +105,14 @@ export default function register(
   };
 
   const syncDisplay = async (ctx: SessionContext, title = sessionName(ctx)): Promise<void> => {
+    // Render through a widget instead of ctx.ui.setStatus(): status text is only drawn by the
+    // built-in footer, and extensions such as pi-powerbar replace that footer with an empty one.
+    const indicator = !(state?.visible ?? state?.fixed) || !title
+      ? undefined
+      : state.fixed
+        ? ctx.ui.theme.fg("success", `● Fixed: ${title}`)
+        : ctx.ui.theme.fg("accent", `● Title: ${title}`);
+    ctx.ui.setWidget(INDICATOR_WIDGET_KEY, indicator ? [indicator] : undefined);
     if (config.terminalTitle.enabled) {
       ctx.ui.setTitle(title ? renderTerminalTitle(config.terminalTitle.template, title, ctx.cwd) : "");
     }
@@ -98,7 +123,7 @@ export default function register(
   };
 
   const markManual = (ctx: SessionContext, title = sessionName(ctx)): void => {
-    const next = createState("manual", turnCount(ctx), title);
+    const next = createState("manual", turnCount(ctx), title, { visible: state?.visible ?? state?.fixed });
     persistState(next);
   };
 
@@ -171,27 +196,27 @@ export default function register(
       }
 
       if (result.kind === "failed" || (result.kind === "keep" && !currentName)) {
-        persistState(createState("failed", turns, currentName));
+        persistState(createState("failed", turns, currentName, { visible: state?.visible ?? state?.fixed }));
         showNamingWarning(ctx, "Automatic session title generation failed.");
         return;
       }
 
       if (result.kind === "keep") {
-        persistState(createState("generated", turns, currentName));
+        persistState(createState("generated", turns, currentName, { visible: state?.visible ?? state?.fixed }));
         if (kind === "manual") ctx.ui.notify("Session title is already up to date.", "info");
         return;
       }
 
       if (!contextStillCurrent(ctx, captured)) return;
       pendingOwnName = result.title;
+      persistState(createState("generated", turns, result.title, { visible: state?.visible ?? state?.fixed }));
       pi.setSessionName(result.title);
       await syncDisplay(ctx, result.title);
       if (!contextStillCurrent(ctx, { ...captured, name: result.title })) return;
-      persistState(createState("generated", turns, result.title));
       if (kind === "manual") ctx.ui.notify(`Session title updated: ${result.title}`, "info");
     } catch {
       if (!controller.signal.aborted && contextStillCurrent(ctx, captured)) {
-        persistState(createState("failed", turns, currentName));
+        persistState(createState("failed", turns, currentName, { visible: state?.visible ?? state?.fixed }));
         showNamingWarning(ctx, "Automatic session title generation failed.");
       }
     } finally {
@@ -250,7 +275,7 @@ export default function register(
     const changedName = event.name;
     if (pendingOwnName === changedName) {
       pendingOwnName = undefined;
-    } else if (state?.status !== "manual" && changedName !== state?.title) {
+    } else if (changedName !== state?.title) {
       inFlight?.abort();
       markManual(ctx, changedName);
     }
@@ -322,8 +347,10 @@ export default function register(
         );
         return;
       }
-      if (command) {
-        ctx.ui.notify("Usage: /session-title [status]", "warning");
+      const explicitTitle = parseExplicitTitleCommand(command);
+      const displayCommand = command === "show" || command === "hide" ? command : undefined;
+      if (command && !explicitTitle && !displayCommand) {
+        ctx.ui.notify("Usage: /session-title [status | show | hide | suggest <title> | fix <title>]", "warning");
         return;
       }
       if (!config.enabled) {
@@ -332,6 +359,52 @@ export default function register(
       }
       if (ctx.mode !== "tui") {
         ctx.ui.notify("/session-title requires interactive mode.", "warning");
+        return;
+      }
+      if (displayCommand) {
+        const title = sessionName(ctx);
+        if (!title) {
+          ctx.ui.notify("No session title is available to display.", "warning");
+          return;
+        }
+        const currentState = restoreState(branch(ctx));
+        persistState(createState(
+          currentState?.status ?? "manual",
+          currentState?.lastEvaluatedUserTurnCount ?? turnCount(ctx),
+          title,
+          { fixed: currentState?.fixed, visible: displayCommand === "show" },
+        ));
+        await syncDisplay(ctx, title);
+        ctx.ui.notify(displayCommand === "show" ? "Session title display enabled." : "Session title display hidden.", "info");
+        return;
+      }
+      if (explicitTitle) {
+        const title = cleanTitle(explicitTitle.title, config.maxLength);
+        if (!title) {
+          ctx.ui.notify("Session title must contain visible text.", "warning");
+          return;
+        }
+
+        inFlight?.abort();
+        inFlight = undefined;
+        pendingOwnName = title;
+        persistState(createState(
+          explicitTitle.mode === "fix" ? "manual" : "generated",
+          turnCount(ctx),
+          title,
+          {
+            fixed: explicitTitle.mode === "fix",
+            visible: explicitTitle.mode === "fix" || state?.visible || state?.fixed,
+          },
+        ));
+        pi.setSessionName(title);
+        await syncDisplay(ctx, title);
+        ctx.ui.notify(
+          explicitTitle.mode === "fix"
+            ? `Session title fixed: ${title}. Automatic refresh is locked.`
+            : `Session title suggested: ${title}. Automatic refresh remains enabled.`,
+          "info",
+        );
         return;
       }
 
@@ -346,7 +419,7 @@ export default function register(
       }
 
       const currentName = sessionName(ctx);
-      persistState(createState("generated", turnCount(ctx), currentName));
+      persistState(createState("generated", turnCount(ctx), currentName, { visible: state?.visible ?? state?.fixed }));
       await evaluate(ctx, "manual");
     },
   });

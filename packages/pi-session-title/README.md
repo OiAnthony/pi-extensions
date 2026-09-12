@@ -16,8 +16,14 @@ pi install npm:@oipsanthony/pi-session-title
 |------|------|
 | `/session-title` | 根据当前对话重新生成标题 |
 | `/session-title status` | 查看启用状态、当前名称和使用的模型 |
+| `/session-title suggest "标题"` | 立即采用指定标题，后续自动刷新仍可替换它 |
+| `/session-title fix "标题"` | 立即采用指定标题，并锁定它，禁止自动刷新替换和显示标题 |
+| `/session-title show` | 显示当前标题；固定标题为绿色，其他标题为蓝色 |
+| `/session-title hide` | 隐藏当前标题 |
 
-需要直接指定名称时，请使用 Pi 内置 `/name`。
+`/session-title suggest "标题"` 和 `/session-title fix "标题"` 都会清理控制字符、Markdown 包装和超过 `maxLength` 的内容。`fix` 的锁定行为与 Pi 内置 `/name` 相同，并默认显示绿色 `● Fixed: 标题`。执行 `show` 后，固定标题显示为绿色 `● Fixed: 标题`，自动或建议标题显示为蓝色 `● Title: 标题`；后续 LLM 更新标题时，已显示的标记也会同步更新。标记使用 widget 而不是 footer status，因为 `pi-powerbar` 等扩展会替换内置 footer，导致 status 文本不再显示。需要重新交给自动命名时，使用 `/session-title` 并确认。
+
+Pi 的 `/resume` 列表把名称渲染为 `warning` 颜色，且扩展无法覆盖单行颜色、名称中的 ANSI 也会被移除，因此锁定状态不会在该列表中用绿色区分。
 
 ## 配置
 
