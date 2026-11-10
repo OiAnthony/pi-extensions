@@ -28,7 +28,11 @@ export default function register(pi: ExtensionAPI, dependencies?: PredictionDepe
     if (!omp.hasUI || omp.mode !== "tui" || omp.agent?.kind !== "main") return;
     editor = installPredictionEditor(omp.ui, {
       choices: () => controller.choices,
-      accepted: cancel,
+      accepted: () => {
+        clearScheduled();
+        // Acceptance fills a draft, not a submission. Keep it reusable after clearing.
+        controller.draftChanged(omp.ui.getEditorText());
+      },
       draftChanged: (text) => {
         clearScheduled();
         controller.draftChanged(text);
