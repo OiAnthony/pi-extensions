@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-prompt-prediction",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Predict the next OMP prompt with native composer ghost text and a smol-to-main model chain.",
   "type": "module",
   "repository": {
