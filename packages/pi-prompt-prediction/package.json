@@ -1,6 +1,6 @@
 {
   "name": "@oipsanthony/pi-prompt-prediction",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Predict the next OMP prompt with native composer ghost text and a smol-to-main model chain.",
   "type": "module",
   "repository": {
@@ -14,13 +14,28 @@
   "homepage": "https://github.com/OiAnthony/pi-extensions/tree/main/packages/pi-prompt-prediction#readme",
   "author": "Anthony",
   "license": "MIT",
-  "keywords": ["pi-package", "omp", "prompt", "prediction", "autocomplete"],
-  "files": ["LICENSE", "extensions/index.ts", "extensions/editor.ts", "extensions/prediction.ts", "package.json", "README.md"],
+  "keywords": [
+    "pi-package",
+    "omp",
+    "prompt",
+    "prediction",
+    "autocomplete"
+  ],
+  "files": [
+    "LICENSE",
+    "extensions/index.ts",
+    "extensions/editor.ts",
+    "extensions/prediction.ts",
+    "package.json",
+    "README.md"
+  ],
   "scripts": {
     "test": "bun test extensions",
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@oipsanthony/pi-model-roles": "^0.2.0"
   },
@@ -28,8 +43,16 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
-  "pi": { "extensions": ["extensions/index.ts"] },
-  "omp": { "extensions": ["extensions/index.ts"] },
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  },
   "devDependencies": {
     "@types/bun": "1.3.14"
   }
