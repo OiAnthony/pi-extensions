@@ -381,6 +381,8 @@ describe("extension lifecycle and race protection", () => {
       message("assistant", [{ type: "text", text: "Updated middleware" }]),
     ];
     const titles: string[] = [];
+    const widgets: Array<string[] | undefined> = [];
+    const themeColors: string[] = [];
     const notifications: string[] = [];
     const appended: any[] = [];
     const context = {
@@ -397,6 +399,13 @@ describe("extension lifecycle and race protection", () => {
         getSessionName: () => name,
       },
       ui: {
+        // Intentionally omits setStatus: pi-powerbar replaces the built-in footer, so the fixed
+        // indicator must render through a widget or the harness fails like the real TUI did.
+        theme: { fg: (color: string, text: string) => {
+          themeColors.push(color);
+          return text;
+        } },
+        setWidget: (_key: string, content: string[] | undefined) => widgets.push(content),
         setTitle: (title: string) => titles.push(title),
         notify: (text: string) => notifications.push(text),
         confirm: async () => {
@@ -431,6 +440,8 @@ describe("extension lifecycle and race protection", () => {
       context,
       entries,
       titles,
+      widgets,
+      themeColors,
       notifications,
       appended,
       command: (args: string) => commandHandler?.(args, context),
@@ -497,6 +508,24 @@ describe("extension lifecycle and race protection", () => {
     ]);
   });
 
+  test("a fixed title aborts an in-flight automatic title request", async () => {
+    let resolveCompletion: ((result: CompletionResult) => void) | undefined;
+    const harness = createHarness(async () => new Promise<CompletionResult>((resolve) => {
+      resolveCompletion = resolve;
+    }));
+    await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.context);
+    harness.handlers.get("agent_settled")?.({}, harness.context);
+    await waitFor(() => Boolean(resolveCompletion));
+
+    await harness.command('fix "Fixed title"');
+    resolveCompletion?.(response("Stale generated title"));
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    assert.equal(harness.getName(), "Fixed title");
+    assert.equal(harness.appended.at(-1)?.data.status, "manual");
+    assert.equal(harness.appended.at(-1)?.data.title, "Fixed title");
+  });
+
   test("the manual command reports when the current title remains accurate", async () => {
     let calls = 0;
     const harness = createHarness(async () => response(calls++ === 0 ? "Auth fix" : "KEEP"));
@@ -508,6 +537,88 @@ describe("extension lifecycle and race protection", () => {
       "Generating session title...",
       "Session title is already up to date.",
     ]);
+  });
+
+  test("suggested titles remain eligible for automatic refresh", async () => {
+    let calls = 0;
+    const harness = createHarness(async () => {
+      calls++;
+      return response("LLM refreshed title");
+    }, { refreshTurns: 1 });
+    await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.context);
+    await harness.command('suggest "Suggested title"');
+
+    assert.equal(harness.getName(), "Suggested title");
+    assert.equal(harness.appended.at(-1)?.data.status, "generated");
+    assert.equal(harness.widgets.at(-1), undefined);
+    assert.match(harness.notifications.at(-1) ?? "", /Automatic refresh remains enabled/);
+
+    harness.entries.push(
+      message("user", [{ type: "text", text: "Add tests" }]),
+      message("assistant", [{ type: "text", text: "Added tests" }]),
+    );
+    harness.handlers.get("agent_settled")?.({}, harness.context);
+    await waitFor(() => harness.getName() === "LLM refreshed title");
+
+    assert.equal(calls, 1);
+  });
+
+  test("show and hide preserve automatic refresh state and render a blue generated-title widget", async () => {
+    const harness = createHarness(async () => response("Refreshed title"), { refreshTurns: 1 });
+    await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.context);
+    await harness.command('suggest "Suggested title"');
+    const lastEvaluatedUserTurnCount = harness.appended.at(-1)?.data.lastEvaluatedUserTurnCount;
+
+    harness.entries.push(
+      message("user", [{ type: "text", text: "Add tests" }]),
+      message("assistant", [{ type: "text", text: "Added tests" }]),
+    );
+    await harness.command("show");
+
+    assert.deepEqual(harness.widgets.at(-1), ["● Title: Suggested title"]);
+    assert.equal(harness.themeColors.at(-1), "accent");
+    assert.equal(harness.appended.at(-1)?.data.visible, true);
+    assert.equal(harness.appended.at(-1)?.data.lastEvaluatedUserTurnCount, lastEvaluatedUserTurnCount);
+
+    harness.handlers.get("agent_settled")?.({}, harness.context);
+    await waitFor(() => harness.getName() === "Refreshed title");
+
+    assert.deepEqual(harness.widgets.at(-1), ["● Title: Refreshed title"]);
+    await harness.command("hide");
+    assert.equal(harness.widgets.at(-1), undefined);
+    assert.equal(harness.appended.at(-1)?.data.visible, false);
+  });
+
+  test("fixed titles create a manual lock that blocks automatic refresh", async () => {
+    let calls = 0;
+    const harness = createHarness(async () => {
+      calls++;
+      return response("Unexpected LLM title");
+    }, { refreshTurns: 1 });
+    await harness.handlers.get("session_start")?.({ reason: "startup" }, harness.context);
+    await harness.command('fix "Fixed title"');
+
+    assert.equal(harness.getName(), "Fixed title");
+    assert.equal(harness.appended.at(-1)?.data.status, "manual");
+    assert.equal(harness.appended.at(-1)?.data.fixed, true);
+    assert.deepEqual(harness.widgets.at(-1), ["● Fixed: Fixed title"]);
+    assert.equal(harness.themeColors.at(-1), "success");
+    assert.match(harness.notifications.at(-1) ?? "", /Automatic refresh is locked/);
+
+    harness.entries.push(
+      message("user", [{ type: "text", text: "Add tests" }]),
+      message("assistant", [{ type: "text", text: "Added tests" }]),
+    );
+    harness.handlers.get("agent_settled")?.({}, harness.context);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    assert.equal(calls, 0);
+    assert.equal(harness.getName(), "Fixed title");
+
+    harness.setName("Manual title");
+    await harness.handlers.get("session_info_changed")?.({ name: "Manual title" }, harness.context);
+    assert.equal(harness.appended.at(-1)?.data.fixed, undefined);
+    assert.deepEqual(harness.widgets.at(-1), ["● Title: Manual title"]);
   });
 
   test("the manual command reports when no conversation is available", async () => {
