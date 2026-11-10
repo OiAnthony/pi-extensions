@@ -11,9 +11,7 @@ import register, {
   emptyUsage,
   formatDuration,
   formatTokens,
-  measureTps,
   rate,
-  rateAfterStall,
   renderReport,
   restoreMetrics,
   type Clock,
@@ -67,7 +65,7 @@ const usage: Usage = {
 
 function request(overrides: Partial<RequestMetrics> = {}): RequestMetrics {
   return {
-    version: 2,
+    version: 3,
     id: "prompt-1:1",
     promptId: "prompt-1",
     sequence: 1,
@@ -80,15 +78,8 @@ function request(overrides: Partial<RequestMetrics> = {}): RequestMetrics {
     usage: { ...usage, cost: { ...usage.cost } },
     headersMs: 100,
     ttftMs: 500,
-    generationMs: 1000,
-    streamMs: 1000,
-    postFirstUpdateCount: 5,
-    effectiveGenerationMs: 1000,
-    tpsBranch: "primary",
-    stallMs: 0,
-    stallCount: 0,
+    responseMs: 1500,
     totalMs: 1600,
-    outputTps: 100,
     stopReason: "stop",
     ...overrides,
   };
@@ -96,7 +87,7 @@ function request(overrides: Partial<RequestMetrics> = {}): RequestMetrics {
 
 function prompt(overrides: Partial<PromptMetrics> = {}): PromptMetrics {
   return {
-    version: 1,
+    version: 3,
     id: "prompt-1",
     startedAt: 1000,
     completedAt: 3000,
@@ -104,12 +95,7 @@ function prompt(overrides: Partial<PromptMetrics> = {}): PromptMetrics {
     requestCount: 1,
     usage: { ...usage, cost: { ...usage.cost } },
     modelMs: 1600,
-    generationMs: 1000,
-    stallMs: 0,
-    stallCount: 0,
     ttftMs: 500,
-    activeTps: 100,
-    effectiveTps: 50,
     status: "completed",
     ...overrides,
   };
@@ -193,9 +179,7 @@ function createHarness(options: { entryRenderer?: boolean } = {}): Harness {
       },
     },
   };
-  // The harness implements only the ExtensionAPI surface exercised by this extension.
-  const extensionApi = api as unknown as ExtensionAPI;
-  register(extensionApi, { clock });
+  register(api as unknown as ExtensionAPI, { clock });
   return {
     handlers,
     commands,
@@ -219,191 +203,72 @@ async function emit(harness: Harness, name: string, event: Record<string, unknow
 
 async function completeRequest(
   harness: Harness,
-  options: { ttftMs: number; generationMs: number; totalMs: number; message?: AssistantMessage },
+  options: { ttftMs: number; responseMs: number; totalMs: number; message?: AssistantMessage },
 ): Promise<void> {
+  const message = options.message ?? assistant();
   await emit(harness, "before_provider_request", { payload: {} });
-  await emit(harness, "message_start", { message: options.message ?? assistant() });
-  harness.advance(100);
+  await emit(harness, "message_start", { message });
+  const headersMs = Math.min(100, options.ttftMs);
+  harness.advance(headersMs);
   await emit(harness, "after_provider_response", { status: 200, headers: {} });
-  harness.advance(options.ttftMs - 100);
+  harness.advance(options.ttftMs - headersMs);
   await emit(harness, "message_update", {
-    message: options.message ?? assistant(),
-    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: options.message ?? assistant() },
+    message,
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: message },
   });
-  await emit(harness, "message_update", {
-    message: options.message ?? assistant(),
-    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: options.message ?? assistant() },
-  });
-  const updateCount = Math.max(5, Math.ceil(options.generationMs / 400));
-  const updateStep = options.generationMs / updateCount;
-  for (let index = 0; index < updateCount; index += 1) {
-    harness.advance(updateStep);
-    await emit(harness, "message_update", {
-      message: options.message ?? assistant(),
-      assistantMessageEvent: {
-        type: "text_delta",
-        contentIndex: 0,
-        delta: String.fromCharCode(98 + index),
-        partial: options.message ?? assistant(),
-      },
-    });
-  }
-  await emit(harness, "message_end", { message: options.message ?? assistant() });
-  harness.advance(options.totalMs - options.ttftMs - options.generationMs);
-  await emit(harness, "turn_end", { turnIndex: 0, message: options.message ?? assistant(), toolResults: [] });
+  harness.advance(options.responseMs - options.ttftMs);
+  await emit(harness, "message_end", { message });
+  harness.advance(options.totalMs - options.responseMs);
+  await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
 }
 
 describe("metric aggregation", () => {
-  test("uses weighted generation time instead of averaging request rates", () => {
-    const requests = [
+  test("uses one prompt-wide effective TPS formula", () => {
+    const metrics = aggregatePrompt("prompt-1", 1000, 7000, 6000, [
       request(),
-      request({
-        id: "prompt-1:2",
-        sequence: 2,
-        generationMs: 3000,
-        streamMs: 3000,
-        effectiveGenerationMs: 3000,
-        totalMs: 3500,
-        outputTps: 100 / 3,
-      }),
-    ];
-    const metrics = aggregatePrompt("prompt-1", 1000, 7000, 6000, requests);
-
-    assert.equal(metrics.usage.output, 200);
-    assert.equal(metrics.generationMs, 4000);
-    assert.equal(metrics.activeTps, 50);
-    assert.ok(Math.abs((metrics.effectiveTps ?? 0) - 33.333) < 0.01);
-  });
-
-  test("excludes user idle gaps from session processing time and effective TPS", () => {
-    const prompts = [
-      prompt(),
-      prompt({ id: "prompt-2", startedAt: 103_000, completedAt: 104_000, durationMs: 1000 }),
-    ];
-    const metrics = aggregateSession(prompts, [request(), request({ id: "prompt-2:1", promptId: "prompt-2" })]);
-
-    assert.equal(metrics.processingMs, 3000);
-    assert.equal(metrics.usage.output, 200);
-    assert.ok(Math.abs((metrics.effectiveTps ?? 0) - 66.666) < 0.01);
-    assert.notEqual(metrics.processingMs, prompts[1]!.completedAt - prompts[0]!.startedAt);
-  });
-
-  test("does not combine individually unmeasurable requests into a prompt fallback", () => {
-    const unavailable = {
-      streamMs: 100,
-      postFirstUpdateCount: 1,
-      effectiveGenerationMs: null,
-      tpsBranch: "unavailable" as const,
-      tpsUnavailableReason: "insufficient-updates" as const,
-      outputTps: null,
-    };
-    const metrics = aggregatePrompt("prompt-1", 1000, 3000, 2000, [
-      request(unavailable),
-      request({ ...unavailable, id: "prompt-1:2", sequence: 2 }),
+      request({ id: "prompt-1:2", sequence: 2, totalMs: 3500 }),
     ]);
 
-    assert.equal(metrics.activeTps, null);
-    assert.equal(metrics.effectiveGenerationMs, null);
-    assert.equal(metrics.tpsBranch, "unavailable");
-    assert.equal(metrics.tpsUnavailableReason, "insufficient-updates");
+    assert.equal(metrics.usage.output, 200);
+    assert.equal(metrics.modelMs, 5100);
+    assert.ok(Math.abs((rate(metrics.usage.output, metrics.durationMs) ?? 0) - 33.333) < 0.01);
   });
 
-  test("uses the primary streaming window when it is reliable", () => {
-    const measurement = measureTps({
-      outputTokens: 100,
-      generationMs: 1500,
-      streamMs: 1000,
-      postFirstUpdateCount: 5,
-      stallMs: 0,
-    });
+  test("weights session throughput by total processing time and aggregates every request TTFT", () => {
+    const prompts = [
+      prompt(),
+      prompt({ id: "prompt-2", durationMs: 1000, requestCount: 2 }),
+    ];
+    const metrics = aggregateSession(prompts, [
+      request(),
+      request({ id: "prompt-2:1", promptId: "prompt-2", ttftMs: 100 }),
+      request({ id: "prompt-2:2", promptId: "prompt-2", ttftMs: 900 }),
+    ]);
 
-    assert.equal(measurement.branch, "primary");
-    assert.equal(measurement.effectiveMs, 1000);
-    assert.equal(measurement.tps, 100);
+    assert.equal(metrics.processingMs, 3000);
+    assert.equal(metrics.requestCount, 3);
+    assert.ok(Math.abs((metrics.effectiveTps ?? 0) - 66.666) < 0.01);
+    assert.equal(metrics.ttftP50Ms, 500);
+    assert.equal(metrics.ttftP95Ms, 900);
+    assert.equal(metrics.ttftSamples, 3);
   });
 
-  test("returns unavailable for a short buffered burst", () => {
-    const measurement = measureTps({
-      outputTokens: 100,
-      generationMs: 100,
-      streamMs: 1,
-      postFirstUpdateCount: 5,
-      stallMs: 0,
-    });
+  test("does not depend on stream chunk timing", () => {
+    const sparse = aggregatePrompt("prompt-1", 1000, 3000, 2000, [request({ responseMs: 1900 })]);
+    const burst = aggregatePrompt("prompt-1", 1000, 3000, 2000, [request({ responseMs: 100 })]);
 
-    assert.equal(measurement.branch, "unavailable");
-    assert.equal(measurement.unavailableReason, "insufficient-duration");
-    assert.equal(measurement.tps, null);
+    assert.equal(rate(sparse.usage.output, sparse.durationMs), 50);
+    assert.equal(rate(burst.usage.output, burst.durationMs), 50);
   });
 
-  test("keeps session active TPS unavailable when an output prompt is unmeasurable", () => {
-    const metrics = aggregateSession([
-      prompt({ version: 2, effectiveGenerationMs: 1000, tpsBranch: "primary" }),
-      prompt({
-        version: 2,
-        id: "prompt-2",
-        activeTps: null,
-        effectiveGenerationMs: null,
-        tpsBranch: "unavailable",
-        tpsUnavailableReason: "insufficient-updates",
-      }),
-    ], []);
-
-    assert.equal(metrics.activeTps, null);
-    assert.ok(metrics.effectiveTps !== null);
-  });
-
-  test("returns n/a rates for empty output and zero generation duration", () => {
+  test("returns n/a rates for empty output and zero duration", () => {
     assert.equal(rate(0, 1000), null);
     assert.equal(rate(100, 0), null);
   });
 
-  test("formats minute durations without spaces", () => {
+  test("formats durations and token counts", () => {
     assert.equal(formatDuration(73_000), "1m13s");
-  });
-
-  test("formats thousands like the original pi-tps line", () => {
     assert.equal(formatTokens(18_500), "18.5K");
-  });
-
-  test("aggregates stall time and count across requests", () => {
-    const requests = [
-      request({ stallMs: 600, stallCount: 1 }),
-      request({ id: "prompt-1:2", sequence: 2, stallMs: 1400, stallCount: 2 }),
-    ];
-    const metrics = aggregatePrompt("prompt-1", 1000, 7000, 6000, requests);
-
-    assert.equal(metrics.stallMs, 2000);
-    assert.equal(metrics.stallCount, 3);
-  });
-
-  test("subtracts stall time from generation time for active TPS", () => {
-    const requests = [request({
-      generationMs: 4000,
-      streamMs: null,
-      postFirstUpdateCount: 2,
-      effectiveGenerationMs: 3000,
-      tpsBranch: "fallback",
-      stallMs: 1000,
-      stallCount: 1,
-    })];
-    const metrics = aggregatePrompt("prompt-1", 1000, 7000, 6000, requests);
-
-    assert.equal(metrics.generationMs, 4000);
-    assert.equal(metrics.stallMs, 1000);
-    assert.equal(metrics.activeTps, 100 / 3);
-  });
-
-  test("rejects implausible rates above 10k tok/s", () => {
-    assert.equal(rateAfterStall(5000, 300, 0), null);
-    assert.equal(rateAfterStall(100, 1000, 600), 250);
-    assert.equal(rateAfterStall(100, 1000, 0), 100);
-  });
-
-  test("partially discounts stalls when they dominate the generation window", () => {
-    // stall 1400ms of a 1000ms window — dominated; half the stall is discounted
-    const tps = rateAfterStall(100, 1000, 1400);
-    assert.ok(tps !== null && Math.abs(tps - 100 / 0.3) < 0.01);
   });
 });
 
@@ -417,7 +282,7 @@ describe("extension lifecycle", () => {
         return text;
       },
     };
-    const details = { version: 1, line: "TPS 1.0 tok/s" };
+    const details = { version: 1, line: "2.0s · 50.0 tok/s" };
 
     harness.messageRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ details }, {}, theme);
     harness.entryRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ data: details }, {}, theme);
@@ -425,113 +290,81 @@ describe("extension lifecycle", () => {
     assert.deepEqual(colors, ["muted", "muted"]);
   });
 
-  test("loads and displays prompt metrics when the host lacks entry renderers", async () => {
+  test("falls back to a notification when the host lacks entry renderers", async () => {
     const harness = createHarness({ entryRenderer: false });
-    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
-    await completeRequest(harness, { ttftMs: 500, generationMs: 1000, totalMs: 1600 });
+    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "" });
+    await completeRequest(harness, { ttftMs: 500, responseMs: 1500, totalMs: 1600 });
+    harness.advance(400);
     await emit(harness, "agent_settled", {});
 
-    assert.deepEqual(harness.entryRendererTypes, []);
     assert.deepEqual(harness.entries.map((entry) => entry.customType), [REQUEST_ENTRY_TYPE, PROMPT_ENTRY_TYPE]);
-    assert.match(
-      harness.notifications[0] ?? "",
-      /^TPS 100\.0 tok\/s · TTFT 500ms · in 100 · out 100 · 1\.6s$/,
+    assert.equal(
+      harness.notifications[0],
+      "2.0s · 50.0 tok/s · 1 request · TTFT 500ms · in 100 · out 100",
     );
   });
 
-  test("records exact request usage, TTFT, prompt duration, and persisted entries", async () => {
+  test("persists v3 observed request and prompt metrics", async () => {
     const harness = createHarness();
-    await emit(harness, "session_start", { reason: "startup" });
-    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
-    harness.advance(5);
-    await completeRequest(harness, { ttftMs: 500, generationMs: 1000, totalMs: 1600 });
-    harness.advance(395);
+    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "" });
+    await completeRequest(harness, { ttftMs: 500, responseMs: 1500, totalMs: 1600 });
+    harness.advance(400);
     await emit(harness, "agent_settled", {});
 
-    assert.equal(harness.entries.length, 3);
-    assert.equal(harness.entries[0]!.customType, REQUEST_ENTRY_TYPE);
-    assert.equal(harness.entries[1]!.customType, PROMPT_ENTRY_TYPE);
-    assert.equal(harness.entries[2]!.customType, PROMPT_DISPLAY_MESSAGE_TYPE);
+    assert.deepEqual(harness.entries.map((entry) => entry.customType), [
+      REQUEST_ENTRY_TYPE,
+      PROMPT_ENTRY_TYPE,
+      PROMPT_DISPLAY_MESSAGE_TYPE,
+    ]);
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
     const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
+    assert.equal(recordedRequest.version, 3);
     assert.equal(recordedRequest.ttftMs, 500);
-    assert.equal(recordedRequest.generationMs, 1500);
+    assert.equal(recordedRequest.responseMs, 1500);
     assert.equal(recordedRequest.totalMs, 1600);
-    assert.equal(recordedRequest.outputTps, 100);
     assert.equal(recordedRequest.usage.reasoning, 25);
+    assert.equal(recordedPrompt.version, 3);
     assert.equal(recordedPrompt.durationMs, 2000);
-    assert.equal(recordedPrompt.effectiveTps, 50);
-    assert.equal(harness.notifications.length, 0);
-    assert.deepEqual(harness.messageRendererTypes, [PROMPT_DISPLAY_MESSAGE_TYPE]);
-    assert.deepEqual(harness.entryRendererTypes, [PROMPT_DISPLAY_MESSAGE_TYPE]);
-    assert.equal(harness.sentMessages.length, 0);
-    assert.equal(harness.widgets.length, 0);
-    const displayData = harness.entries[2]!.data as { line?: string };
-    assert.match(
-      displayData.line ?? "",
-      /^TPS 100\.0 tok\/s · TTFT 500ms · in 100 · out 100 · 2\.0s$/,
+    assert.equal(recordedPrompt.requestCount, 1);
+    assert.equal(rate(recordedPrompt.usage.output, recordedPrompt.durationMs), 50);
+  });
+
+  test("includes prefill, provider latency, and tool time in the single effective TPS", async () => {
+    const harness = createHarness();
+    await emit(harness, "before_agent_start", { prompt: "use tools", systemPrompt: "" });
+    await completeRequest(harness, { ttftMs: 800, responseMs: 1000, totalMs: 1200 });
+    harness.advance(1600);
+    await completeRequest(harness, { ttftMs: 500, responseMs: 1000, totalMs: 1200 });
+    await emit(harness, "agent_settled", {});
+
+    const recorded = harness.entries.find((entry) => entry.customType === PROMPT_ENTRY_TYPE)?.data as PromptMetrics;
+    assert.equal(recorded.durationMs, 4000);
+    assert.equal(recorded.requestCount, 2);
+    assert.equal(recorded.usage.output, 200);
+    assert.equal(rate(recorded.usage.output, recorded.durationMs), 50);
+    assert.equal(
+      (harness.entries.at(-1)?.data as { line?: string }).line,
+      "4.0s · 50.0 tok/s · 2 requests · TTFT 800ms · in 200 · out 200",
     );
   });
 
-  test("measures generation from message_start while TTFT starts at the provider request", async () => {
+  test("uses message_end for Pi response timing", async () => {
     const harness = createHarness();
-    const message = assistant();
-    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
-    await emit(harness, "before_provider_request", { payload: {} });
-    harness.advance(100);
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_start", contentIndex: 0, partial: message },
-    });
-    harness.advance(400);
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x", partial: message },
-    });
-    harness.advance(1000);
-    await emit(harness, "message_end", { message });
-    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
+    await emit(harness, "before_agent_start", { prompt: "pi", systemPrompt: "" });
+    await completeRequest(harness, { ttftMs: 500, responseMs: 1500, totalMs: 1800 });
     await emit(harness, "agent_settled", {});
 
-    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
-    assert.equal(recordedRequest.ttftMs, 500);
-    assert.equal(recordedRequest.generationMs, 1500);
+    const recorded = harness.entries[0]!.data as RequestMetrics;
+    assert.equal(recorded.responseMs, 1500);
+    assert.equal(recorded.totalMs, 1800);
   });
 
-  test("keeps the response tail in the primary TPS window", async () => {
-    const harness = createHarness();
-    const message = assistant();
-    await emit(harness, "before_agent_start", { prompt: "tail", systemPrompt: "", systemPromptOptions: {} });
-    await emit(harness, "before_provider_request", { payload: {} });
-    await emit(harness, "message_start", { message });
-    harness.advance(100);
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: message },
-    });
-    for (const delta of ["b", "c", "d", "e", "f"]) {
-      harness.advance(100);
-      await emit(harness, "message_update", {
-        message,
-        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
-      });
-    }
-    harness.advance(200);
-    await emit(harness, "message_end", { message });
-    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
-    await emit(harness, "agent_settled", {});
-
-    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
-    assert.equal(recordedRequest.streamMs, 700);
-    assert.equal(recordedRequest.tpsBranch, "primary");
-    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.7) < 0.01);
-  });
-
-  test("uses turn_end as the generation boundary when OMP omits message_end", async () => {
+  test("uses turn_end when OMP omits message_end", async () => {
     const harness = createHarness();
     const message = assistant({ usage: { ...usage, output: 11, cost: { ...usage.cost } } });
-    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
+    await emit(harness, "before_agent_start", { prompt: "omp", systemPrompt: "" });
     await emit(harness, "before_provider_request", { payload: {} });
+    await emit(harness, "message_start", { message });
     harness.advance(3900);
     await emit(harness, "message_update", {
       message,
@@ -543,152 +376,27 @@ describe("extension lifecycle", () => {
     await emit(harness, "agent_settled", {});
 
     const recordedRequest = harness.entries[0]!.data as RequestMetrics;
+    const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
     assert.equal(recordedRequest.ttftMs, 3900);
-    assert.equal(recordedRequest.generationMs, 12_400);
-    assert.equal(recordedRequest.outputTps, null);
-    assert.equal(recordedRequest.tpsUnavailableReason, "insufficient-updates");
-    assert.match(
-      (harness.entries[2]!.data as { line?: string }).line ?? "",
-      /^TPS n\/a tok\/s · TTFT 3\.9s · in 100 · out 11 · 12\.5s$/,
-    );
+    assert.equal(recordedRequest.responseMs, 12_400);
+    assert.equal(recordedRequest.totalMs, 12_400);
+    assert.equal(recordedPrompt.durationMs, 12_500);
+    assert.ok(Math.abs((rate(recordedPrompt.usage.output, recordedPrompt.durationMs) ?? 0) - 0.88) < 0.001);
   });
 
-  test("uses agent_end as a prompt completion boundary without double persistence", async () => {
+  test("does not persist twice when both completion events fire", async () => {
     const harness = createHarness();
-    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "", systemPromptOptions: {} });
-    await completeRequest(harness, { ttftMs: 200, generationMs: 400, totalMs: 700 });
+    await emit(harness, "before_agent_start", { prompt: "hello", systemPrompt: "" });
+    await completeRequest(harness, { ttftMs: 200, responseMs: 400, totalMs: 700 });
     harness.advance(100);
     await emit(harness, "agent_end", { messages: [] });
     await emit(harness, "agent_settled", {});
 
     assert.equal(harness.entries.length, 3);
-    assert.equal(harness.sentMessages.length, 0);
     assert.equal((harness.entries[1]!.data as PromptMetrics).durationMs, 800);
   });
 
-  test("detects a single inference stall from stream gaps and nets it out of TPS", async () => {
-    const harness = createHarness();
-    await emit(harness, "before_agent_start", { prompt: "stall", systemPrompt: "", systemPromptOptions: {} });
-    await emit(harness, "before_provider_request", { payload: {} });
-    harness.advance(100);
-    await emit(harness, "after_provider_response", { status: 200, headers: {} });
-    harness.advance(400);
-    const message = assistant();
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: message },
-    });
-    harness.advance(600); // gap ≥ 500ms → stall
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "b", partial: message },
-    });
-    harness.advance(200);
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "c", partial: message },
-    });
-    harness.advance(200);
-    await emit(harness, "message_end", { message });
-    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
-    await emit(harness, "agent_settled", {});
-
-    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
-    assert.equal(recordedRequest.stallMs, 600);
-    assert.equal(recordedRequest.stallCount, 1);
-    assert.equal(recordedRequest.generationMs, 1500); // message start → message end
-    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.9) < 0.01);
-    assert.equal(recordedRequest.tpsBranch, "fallback");
-    const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
-    assert.equal(recordedPrompt.stallMs, 600);
-    const line = (harness.entries[2]!.data as { line?: string }).line ?? "";
-    assert.match(line, /^TPS 111\.1 tok\/s/);
-    assert.match(line, /· stall 600ms×1 · 1\.5s$/);
-  });
-
-  test("keeps a stall after the first delta inside the primary stream window", async () => {
-    const harness = createHarness();
-    const message = assistant();
-    await emit(harness, "before_agent_start", { prompt: "stall before stream", systemPrompt: "", systemPromptOptions: {} });
-    await emit(harness, "before_provider_request", { payload: {} });
-    await emit(harness, "message_start", { message });
-    harness.advance(100);
-    await emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a", partial: message },
-    });
-    for (const [gap, delta] of [[600, "b"], [300, "c"], [300, "d"], [300, "e"], [300, "f"]] as const) {
-      harness.advance(gap);
-      await emit(harness, "message_update", {
-        message,
-        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
-      });
-    }
-    await emit(harness, "message_end", { message });
-    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
-    await emit(harness, "agent_settled", {});
-
-    const recorded = harness.entries[0]!.data as RequestMetrics;
-    assert.equal(recorded.streamMs, 1800);
-    assert.equal(recorded.stallMs, 600);
-    assert.equal(recorded.tpsBranch, "primary");
-    assert.ok(Math.abs((recorded.outputTps ?? 0) - 100 / 1.2) < 0.01);
-  });
-
-  test("merges consecutive stalled updates into one stall event and discounts dominance", async () => {
-    const harness = createHarness();
-    await emit(harness, "before_agent_start", { prompt: "stall chain", systemPrompt: "", systemPromptOptions: {} });
-    await emit(harness, "before_provider_request", { payload: {} });
-    harness.advance(100);
-    await emit(harness, "after_provider_response", { status: 200, headers: {} });
-    harness.advance(400);
-    const message = assistant();
-    const update = (delta: string): Promise<void> => emit(harness, "message_update", {
-      message,
-      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
-    });
-    await update("a");
-    harness.advance(600); // stall 1
-    await update("b");
-    harness.advance(800); // stall 2, consecutive → still one event
-    await update("c");
-    harness.advance(200); // resume streaming
-    await update("d");
-    await emit(harness, "message_end", { message });
-    await emit(harness, "turn_end", { turnIndex: 0, message, toolResults: [] });
-    await emit(harness, "agent_settled", {});
-
-    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
-    assert.equal(recordedRequest.stallMs, 1400);
-    assert.equal(recordedRequest.stallCount, 1);
-    // generationMs = 2100 (request start fallback → message end), so the
-    // fallback subtracts the 1400ms stall from the full generation window.
-    assert.ok(Math.abs((recordedRequest.outputTps ?? 0) - 100 / 0.7) < 0.01);
-    const line = (harness.entries[2]!.data as { line?: string }).line ?? "";
-    assert.match(line, /· stall 1\.4s×1 /);
-  });
-
-  test("aggregates multiple requests under one prompt", async () => {
-    const harness = createHarness();
-    await emit(harness, "before_agent_start", { prompt: "use tools", systemPrompt: "", systemPromptOptions: {} });
-    await completeRequest(harness, { ttftMs: 200, generationMs: 1000, totalMs: 1300 });
-    harness.advance(200);
-    await completeRequest(harness, { ttftMs: 300, generationMs: 3000, totalMs: 3500 });
-    await emit(harness, "agent_settled", {});
-
-    const promptEntry = harness.entries.find((entry) => entry.customType === PROMPT_ENTRY_TYPE);
-    assert.ok(promptEntry);
-    const recordedPrompt = promptEntry.data as PromptMetrics;
-    assert.equal(recordedPrompt.requestCount, 2);
-    assert.equal(recordedPrompt.usage.output, 200);
-    assert.equal(recordedPrompt.activeTps, 50);
-    assert.match(
-      (harness.entries.find((entry) => entry.customType === PROMPT_DISPLAY_MESSAGE_TYPE)?.data as { line?: string } | undefined)?.line ?? "",
-      /^TPS 50\.0 tok\/s · TTFT 200ms · in 200 · out 200 · 5\.0s$/,
-    );
-  });
-
-  test("keeps TTFT and TPS unavailable when the stream fails before content", async () => {
+  test("records an error with no output and reports n/a throughput", async () => {
     const harness = createHarness();
     const failed = assistant({
       content: [],
@@ -696,29 +404,43 @@ describe("extension lifecycle", () => {
       stopReason: "error",
       errorMessage: "stream failed",
     });
-    await emit(harness, "before_agent_start", { prompt: "fail", systemPrompt: "", systemPromptOptions: {} });
+    await emit(harness, "before_agent_start", { prompt: "fail", systemPrompt: "" });
     await emit(harness, "before_provider_request", { payload: {} });
     harness.advance(300);
     await emit(harness, "message_end", { message: failed });
     await emit(harness, "turn_end", { turnIndex: 0, message: failed, toolResults: [] });
     await emit(harness, "agent_settled", {});
 
-    const recorded = harness.entries[0]!.data as RequestMetrics;
-    assert.equal(recorded.ttftMs, null);
-    assert.equal(recorded.outputTps, null);
-    assert.equal(recorded.stopReason, "error");
+    const recordedRequest = harness.entries[0]!.data as RequestMetrics;
+    const recordedPrompt = harness.entries[1]!.data as PromptMetrics;
+    assert.equal(recordedRequest.ttftMs, null);
+    assert.equal(recordedRequest.stopReason, "error");
+    assert.equal(recordedPrompt.status, "error");
+    assert.match((harness.entries[2]!.data as { line?: string }).line ?? "", / · n\/a tok\/s · /);
   });
 
-  test("restores legacy v1 entry names alongside v2 entries", () => {
-    const legacyRequest = { ...request(), version: 1 as const };
-    delete legacyRequest.streamMs;
-    delete legacyRequest.postFirstUpdateCount;
-    delete legacyRequest.effectiveGenerationMs;
-    delete legacyRequest.tpsBranch;
-    const legacyPrompt = prompt();
+  test("restores v1 and v2 records as v3 observed metrics", () => {
+    const legacyRequest = {
+      ...request(),
+      version: 2,
+      generationMs: 1500,
+      stallMs: 600,
+      stallCount: 1,
+      outputTps: 100,
+    };
+    delete (legacyRequest as { responseMs?: number | null }).responseMs;
+    const legacyPrompt = {
+      ...prompt(),
+      version: 1,
+      generationMs: 1000,
+      stallMs: 600,
+      stallCount: 1,
+      activeTps: 100,
+      effectiveTps: 50,
+    };
     const sessionManager = {
       getBranch: () => [
-        { type: "custom", customType: "pi-tps/request/v1", data: legacyRequest },
+        { type: "custom", customType: "pi-tps/request/v2", data: legacyRequest },
         { type: "custom", customType: "pi-tps/prompt/v1", data: legacyPrompt },
         { type: "custom", customType: REQUEST_ENTRY_TYPE, data: request({ id: "prompt-2:1" }) },
       ],
@@ -726,10 +448,13 @@ describe("extension lifecycle", () => {
 
     const restored = restoreMetrics(sessionManager);
     assert.equal(restored.requests.length, 2);
+    assert.equal(restored.requests[0]!.version, 3);
+    assert.equal(restored.requests[0]!.responseMs, 1500);
     assert.equal(restored.prompts.length, 1);
+    assert.equal(restored.prompts[0]!.version, 3);
   });
 
-  test("restores only metrics on the active branch after tree navigation", async () => {
+  test("restores only the active branch and reports prompt plus session summaries", async () => {
     const harness = createHarness();
     harness.branch.push(
       { type: "custom", customType: REQUEST_ENTRY_TYPE, data: request() },
@@ -739,39 +464,24 @@ describe("extension lifecycle", () => {
     await emit(harness, "session_tree", { newLeafId: "leaf", oldLeafId: "old" });
     await harness.commands.get("tps")?.("", harness.context);
 
-    const restored = restoreMetrics(harness.context.sessionManager);
-    assert.equal(restored.requests.length, 1);
-    assert.equal(restored.prompts.length, 1);
     const lines = (harness.notifications.at(-1) ?? "").split("\n");
-    assert.equal(lines.length, 1);
-    assert.match(lines[0] ?? "", /^TPS 100\.0 tok\/s · TTFT 500ms/);
-    assert.match(lines[0] ?? "", /· in 100 · out 100/);
-    assert.match(lines[0] ?? "", /· 2\.0s$/);
-    assert.doesNotMatch(lines.join(""), /session/i);
-    assert.doesNotMatch(lines.join(""), /(?:TPS|TTFT|Req|Reasoning|Time|Session):/);
-    assert.doesNotMatch(lines.join(""), /Eff:|Cache:|\$/);
+    assert.deepEqual(lines, [
+      "2.0s · 50.0 tok/s · 1 request · TTFT 500ms · in 100 · out 100",
+      "1 prompt · 1 request · 50.0 tok/s · processing 2.0s",
+      "TTFT p50 500ms · p95 500ms · n=1",
+    ]);
   });
 
-  test("reports session processing time without idle wall-clock gaps", () => {
-    const text = renderReport([
+  test("keeps one line per prompt and uses processing time instead of idle wall time", () => {
+    const prompts = [
       prompt(),
       prompt({ id: "prompt-2", startedAt: 103_000, completedAt: 104_000, durationMs: 1000 }),
-    ]);
-    const promptLines = text.split("\n");
-    assert.match(promptLines[0] ?? "", /· in 100 · out 100 · 2\.0s$/);
-    assert.match(promptLines[1] ?? "", /· in 100 · out 100 · 3\.0s\(\+1\.0s\)$/);
-  });
-
-  test("keeps one line for every completed prompt in session order", () => {
-    const text = renderReport([
-      prompt(),
-      prompt({ id: "prompt-2", startedAt: 4000, completedAt: 5000, durationMs: 1000 }),
-    ]);
-
+    ];
+    const text = renderReport(prompts, [request(), request({ id: "prompt-2:1", promptId: "prompt-2" })]);
     const lines = text.split("\n");
-    assert.equal(lines.length, 2);
-    assert.match(lines[0] ?? "", /^TPS 100\.0 tok\/s/);
-    assert.match(lines[1] ?? "", /^TPS 100\.0 tok\/s/);
-    assert.doesNotMatch(text, /\bP[12] |TPS:/);
+
+    assert.equal(lines.length, 4);
+    assert.equal(lines[2], "2 prompts · 2 requests · 66.7 tok/s · processing 3.0s");
+    assert.equal(lines[3], "TTFT p50 500ms · p95 500ms · n=2");
   });
 });

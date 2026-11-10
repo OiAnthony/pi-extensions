@@ -12,7 +12,7 @@
     },
     "packages/pi-codex-compaction": {
       "name": "@oipsanthony/pi-codex-compaction",
-      "version": "0.2.0",
+      "version": "0.2.2",
       "devDependencies": {
         "@earendil-works/pi-agent-core": "0.83.0",
         "@earendil-works/pi-ai": "0.83.0",
@@ -29,7 +29,7 @@
     },
     "packages/pi-command-history": {
       "name": "@oipsanthony/pi-command-history",
-      "version": "0.2.0",
+      "version": "0.2.3",
       "peerDependencies": {
         "@mariozechner/pi-coding-agent": "*",
         "@mariozechner/pi-tui": "*",
@@ -37,7 +37,7 @@
     },
     "packages/pi-fork-with-herdr": {
       "name": "@oipsanthony/pi-fork-with-herdr",
-      "version": "0.1.0",
+      "version": "0.1.3",
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "0.83.0",
         "@types/bun": "1.3.14",
@@ -48,7 +48,7 @@
     },
     "packages/pi-model-roles": {
       "name": "@oipsanthony/pi-model-roles",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "@earendil-works/pi-tui": "0.83.0",
         "@types/bun": "1.3.14",
@@ -58,11 +58,25 @@
         "@earendil-works/pi-tui": "*",
       },
     },
-    "packages/pi-prompt-translator": {
-      "name": "@oipsanthony/pi-prompt-translator",
+    "packages/pi-prompt-prediction": {
+      "name": "@oipsanthony/pi-prompt-prediction",
       "version": "0.1.0",
       "dependencies": {
-        "@oipsanthony/pi-model-roles": "workspace:*",
+        "@oipsanthony/pi-model-roles": "^0.2.0",
+      },
+      "devDependencies": {
+        "@types/bun": "1.3.14",
+      },
+      "peerDependencies": {
+        "@earendil-works/pi-ai": "*",
+        "@earendil-works/pi-coding-agent": "*",
+      },
+    },
+    "packages/pi-prompt-translator": {
+      "name": "@oipsanthony/pi-prompt-translator",
+      "version": "0.2.5",
+      "dependencies": {
+        "@oipsanthony/pi-model-roles": "^0.2.0",
       },
       "devDependencies": {
         "@types/bun": "1.3.14",
@@ -74,9 +88,9 @@
     },
     "packages/pi-session-title": {
       "name": "@oipsanthony/pi-session-title",
-      "version": "0.2.0",
+      "version": "0.3.5",
       "dependencies": {
-        "@oipsanthony/pi-model-roles": "workspace:*",
+        "@oipsanthony/pi-model-roles": "^0.2.0",
       },
       "devDependencies": {
         "@types/bun": "1.3.14",
@@ -88,7 +102,7 @@
     },
     "packages/pi-tps": {
       "name": "@oipsanthony/pi-tps",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "@earendil-works/pi-ai": "0.83.0",
         "@earendil-works/pi-coding-agent": "0.83.0",
@@ -252,6 +266,8 @@
     "@oipsanthony/pi-fork-with-herdr": ["@oipsanthony/pi-fork-with-herdr@workspace:packages/pi-fork-with-herdr"],
 
     "@oipsanthony/pi-model-roles": ["@oipsanthony/pi-model-roles@workspace:packages/pi-model-roles"],
+
+    "@oipsanthony/pi-prompt-prediction": ["@oipsanthony/pi-prompt-prediction@workspace:packages/pi-prompt-prediction"],
 
     "@oipsanthony/pi-prompt-translator": ["@oipsanthony/pi-prompt-translator@workspace:packages/pi-prompt-translator"],
 
