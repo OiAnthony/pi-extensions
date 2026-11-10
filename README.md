@@ -13,6 +13,7 @@ Pi 社区已经有不少优秀的 extensions。这个仓库只补充其中尚未
 | [pi-fork-with-herdr](packages/pi-fork-with-herdr) | 将当前 Pi session branch 复制到新的 Herdr tab | Pi + Herdr |
 | [pi-model-roles](packages/pi-model-roles) | 共享模型角色解析，并为主 Agent 提供角色循环切换 | Pi |
 | [pi-prompt-translator](packages/pi-prompt-translator) | 提交前按需将 editor 中的中文 Prompt 翻译为英文 | Pi + OMP |
+| [pi-prompt-prediction](packages/pi-prompt-prediction) | 使用 `@smol → 主模型` 预测下一个 Prompt，以 ghost text 按需填入草稿 | OMP |
 | [pi-session-title](packages/pi-session-title) | 自动生成并同步 session、terminal 和 Herdr pane 标题 | Pi + Herdr |
 | [pi-tps](packages/pi-tps) | 统计请求、Prompt 与 Session 的 token throughput 和 latency | Pi + OMP |
 
