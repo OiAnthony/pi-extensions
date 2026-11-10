@@ -17,6 +17,8 @@ omp --extension ./packages/pi-prompt-prediction/extensions/index.ts
 
 完成一轮对话后，空输入框会显示预测。输入匹配的前缀时继续显示剩余文本；按 Tab 或 → 接受，再按 Enter 才发送。不匹配的输入会清除预测。
 
+接受预测后，按 Ctrl+C 清空草稿，可再次按 Tab 或 → 填入同一预测，不增加模型请求。输入不匹配的内容、提交 prompt、开始新轮次或切换模型、session 后，原预测不再保留。
+
 ## 模型选择
 
 默认链路为 `@smol → 当前主模型`：
