@@ -20,7 +20,7 @@ export function installPiPredictions(
   let disposed = false;
   let pasting = false;
 
-  const suffix = (): string | undefined => {
+  const predictionSuffix = (): string | undefined => {
     if (disposed || pasting || !cursorEditor.focused || !cursorEditor.isShowingAutocomplete || cursorEditor.isShowingAutocomplete()) return;
     if (!editor.insertTextAtCursor) return;
     const text = editor.getText();
@@ -29,6 +29,7 @@ export function installPiPredictions(
     if (!choice || !cursor || text.includes("\n") || cursor.line !== 0 || cursor.col !== text.length || !choice.startsWith(text)) return;
     return choice.slice(text.length) || undefined;
   };
+  const suffix = (): string | undefined => predictionSuffix() ?? hooks.status?.();
 
   const render: typeof editor.render = function (this: typeof editor, width) {
     const lines = originalRender.call(this, width);
@@ -59,7 +60,7 @@ export function installPiPredictions(
     const pasteInput = wasPasting || pasting;
     if (data.includes("\x1b[201~")) pasting = false;
     if (!disposed && !pasteInput) {
-      const remaining = suffix();
+      const remaining = predictionSuffix();
       if (keybindings.matches(data, "app.interrupt")) {
         hooks.cancelled();
         if (remaining) return;

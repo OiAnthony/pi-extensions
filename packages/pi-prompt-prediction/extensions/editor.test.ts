@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { installPredictionEditor, type PredictionEditorHooks } from "./editor.js";
 
 type EditorUI = Parameters<typeof installPredictionEditor>[0];
@@ -18,6 +19,10 @@ class FakeEditor {
   setText(text: string) {
     this.text = text;
     this.onChange?.(this.text);
+  }
+
+  render(_width: number) {
+    return [CURSOR_MARKER];
   }
 
   handleInput(input: string) {
@@ -60,13 +65,14 @@ function harness(initial?: FakeEditor) {
   let factory: EditorFactory | undefined = previousFactory;
   const tui = { requestRender: () => { renders++; } } as Parameters<EditorFactory>[0];
   const ui: EditorUI = {
-    theme: {} as EditorUI["theme"],
+    theme: { fg: (_color: string, text: string) => text } as EditorUI["theme"],
     getEditorComponent: () => factory,
     setEditorComponent(next) {
       sets++;
       factory = next;
       if (!next) return;
-      const editor = next(tui, {} as Parameters<EditorFactory>[1], {} as Parameters<EditorFactory>[2]);
+      const keybindings = { matches: (input: string, binding: string) => input === "tab" && binding === "tui.input.tab" };
+      const editor = next(tui, {} as Parameters<EditorFactory>[1], keybindings as Parameters<EditorFactory>[2]);
       current = editor as unknown as FakeEditor;
       // Faithfully reproduce host assignments after the factory returns.
       current.predictions = () => ["native suggestion"];
@@ -86,9 +92,11 @@ function harness(initial?: FakeEditor) {
   };
   let choices: readonly string[] | undefined = ["extension suggestion"];
   let accepted = 0;
+  let status: string | undefined;
   const drafts: string[] = [];
   const hooks: PredictionEditorHooks = {
     choices: () => choices,
+    status: () => status,
     accepted() {
       accepted++;
       choices = undefined;
@@ -114,6 +122,7 @@ function harness(initial?: FakeEditor) {
     get sets() { return sets; },
     get accepted() { return accepted; },
     set choices(value: readonly string[] | undefined) { choices = value; },
+    set status(value: string | undefined) { status = value; },
   };
 }
 
@@ -133,6 +142,19 @@ describe("native prediction editor integration", () => {
     expect(h.drafts).toEqual(["extension suggestion"]);
     binding.requestRender();
     expect(h.renders).toBe(1);
+  });
+
+  test("renders progress status inline without accepting it", () => {
+    const h = harness();
+    installPredictionEditor(h.ui, h.hooks);
+    h.choices = undefined;
+    h.editor.predictions = () => undefined;
+    h.status = "Predicting next prompt…";
+    h.editor.render = () => [CURSOR_MARKER];
+    expect(h.editor.predictions?.()).toEqual(["Predicting next prompt…"]);
+    h.editor.handleInput("tab");
+    expect(h.editor.getText()).toBe("");
+    expect(h.accepted).toBe(0);
   });
 
   test("preserves native provider and callbacks when extension choices are absent or empty", () => {

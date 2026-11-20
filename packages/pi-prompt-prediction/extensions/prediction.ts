@@ -117,14 +117,34 @@ export class PromptPredictionController {
   private offered: readonly string[] | undefined;
   private pending: AbortController | undefined;
   private revision = 0;
+  private currentStatus: "predicting" | "ready" | undefined;
 
   constructor(
     private readonly changed: () => void,
     private readonly dependencies: PredictionDependencies = { complete },
+    private readonly statusChanged: (status: "predicting" | "ready" | undefined) => void = () => {},
   ) {}
 
   get choices(): readonly string[] | undefined {
     return this.offered;
+  }
+
+  get isPending(): boolean {
+    return this.pending !== undefined;
+  }
+
+  get hasPrediction(): boolean {
+    return this.offered !== undefined;
+  }
+
+  get status(): "predicting" | "ready" | undefined {
+    return this.currentStatus;
+  }
+
+  private setStatus(status: "predicting" | "ready" | undefined): void {
+    if (this.currentStatus === status) return;
+    this.currentStatus = status;
+    this.statusChanged(status);
   }
 
   private clear(): void {
@@ -142,11 +162,19 @@ export class PromptPredictionController {
   cancel(): void {
     this.abort();
     this.clear();
+    this.setStatus(undefined);
   }
 
   draftChanged(text: string): void {
     this.abort();
-    if (this.offered && !this.offered[0]!.startsWith(text)) this.clear();
+    if (this.offered && !this.offered[0]!.startsWith(text)) {
+      this.clear();
+      this.setStatus(undefined);
+    } else if (this.offered) {
+      this.setStatus("ready");
+    } else {
+      this.setStatus(undefined);
+    }
   }
 
   async request(context: PredictionContext): Promise<void> {
@@ -164,6 +192,7 @@ export class PromptPredictionController {
       const revision = this.revision;
       controller = new AbortController();
       this.pending = controller;
+      this.setStatus("predicting");
       const { signal } = controller;
       timer = setTimeout(() => controller!.abort(), this.dependencies.deadlineMs ?? 15_000);
       const current = () => !signal.aborted && this.revision === revision
@@ -229,6 +258,7 @@ export class PromptPredictionController {
           if (!current()) return;
           this.offered = [prediction];
           this.changed();
+          this.setStatus("ready");
           return;
         } catch {
           if (!current()) return;
@@ -238,7 +268,10 @@ export class PromptPredictionController {
       // Predictions are speculative: role/auth/provider failures never interrupt the user's agent.
     } finally {
       clearTimeout(timer);
-      if (this.pending === controller) this.pending = undefined;
+      if (this.pending === controller) {
+        this.pending = undefined;
+        if (!this.offered) this.setStatus(undefined);
+      }
     }
   }
 }

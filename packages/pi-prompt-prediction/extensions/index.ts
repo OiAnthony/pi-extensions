@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { installPredictionEditor, type PredictionEditorBinding } from "./editor.js";
 import { PromptPredictionController, type PredictionContext, type PredictionDependencies } from "./prediction.js";
 
@@ -6,10 +7,33 @@ type OmpContext = ExtensionContext & PredictionContext & {
   agent?: { kind: "main" | "sub" };
 };
 
+const isPromptPredictInput = (text: string): boolean => /^\/?prompt-predict(?:\s+.*)?$/.test(text.trim());
+
 export default function register(pi: ExtensionAPI, dependencies?: PredictionDependencies): void {
   let editor: PredictionEditorBinding | undefined;
   let scheduled: Timer | undefined;
-  const controller = new PromptPredictionController(() => editor?.requestRender(), dependencies);
+  const controller = new PromptPredictionController(
+    () => editor?.requestRender(),
+    dependencies,
+    () => editor?.requestRender(),
+  );
+  pi.registerCommand("prompt-predict", {
+    description: "Predict the next prompt",
+    getArgumentCompletions: (prefix): AutocompleteItem[] | null => {
+      const value = prefix.trim();
+      return "refresh".startsWith(value) ? [{ value: "refresh", label: "refresh" }] : null;
+    },
+    handler: async (args, context) => {
+      if (controller.isPending) return;
+      const refresh = args.trim() === "refresh";
+      const deferred = Promise.withResolvers<void>();
+      setTimeout(deferred.resolve, 0);
+      await deferred.promise;
+      if (controller.hasPrediction && !refresh) return;
+      if (refresh) controller.cancel();
+      await controller.request(context as OmpContext);
+    },
+  });
 
   const clearScheduled = (): void => {
     clearTimeout(scheduled);
@@ -28,6 +52,7 @@ export default function register(pi: ExtensionAPI, dependencies?: PredictionDepe
     if (!omp.hasUI || omp.mode !== "tui" || (omp.agent && omp.agent.kind !== "main")) return;
     editor = installPredictionEditor(omp.ui, {
       choices: () => controller.choices,
+      status: () => controller.status === "predicting" ? "Predicting next prompt…" : undefined,
       accepted: () => {
         clearScheduled();
         controller.draftChanged(omp.ui.getEditorText());
@@ -35,6 +60,7 @@ export default function register(pi: ExtensionAPI, dependencies?: PredictionDepe
       cancelled: cancel,
       draftChanged: (text) => {
         clearScheduled();
+        if (isPromptPredictInput(text)) return;
         controller.draftChanged(text);
       },
     }, omp.agent ? "omp" : "pi");
@@ -63,7 +89,11 @@ export default function register(pi: ExtensionAPI, dependencies?: PredictionDepe
     if (editor && omp.hasUI && omp.mode === "tui") schedule(omp);
   });
 
-  pi.on("input", cancel);
+  pi.on("input", (event) => {
+    const text = typeof event.text === "string" ? event.text.trim() : "";
+    if (text.startsWith("/") || isPromptPredictInput(text)) return;
+    cancel();
+  });
   pi.on("agent_start", cancel);
   pi.on("session_before_switch", cancel);
   pi.on("session_before_fork", cancel);
