@@ -48,14 +48,27 @@ function fixture() {
   return { state, context };
 }
 
-function setup(implementation: PredictionDependencies["complete"], overrides: Partial<PredictionDependencies> = {}) {
+function setup(
+  implementation: PredictionDependencies["complete"],
+  overrides: Partial<PredictionDependencies> = {},
+  statusChanged: (status: "predicting" | "ready" | undefined) => void = () => {},
+) {
   let renders = 0;
   const controller = new PromptPredictionController(() => renders++, {
     complete: implementation,
     ...overrides,
-  });
+  }, statusChanged);
   return { controller, renders: () => renders };
 }
+
+test("reports prediction status transitions", async () => {
+  const statuses: Array<"predicting" | "ready" | undefined> = [];
+  const { controller } = setup(async () => response("加一个回归测试"), {}, status => statuses.push(status));
+  const { context } = fixture();
+  await controller.request(context);
+  controller.cancel();
+  assert.deepEqual(statuses, ["predicting", "ready", undefined]);
+});
 
 describe("prediction model chain", () => {
   for (const failure of ["throw", "error", "aborted", "empty", "multiline", "fence", "controls", "long"] as const) {

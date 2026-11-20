@@ -1,16 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import register from "./index.js";
 import type { PredictionContext, PredictionModel } from "./prediction.js";
+
+type CommandHandler = (args: string, context: ExtensionContext) => Promise<void> | void;
 
 type Handler = (event: Record<string, unknown>, context: ExtensionContext) => unknown;
 type Factory = NonNullable<Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0]>;
 
 function harness(runtime: "pi" | "omp" = "pi", overrides: Record<string, unknown> = {}) {
   const handlers = new Map<string, Handler[]>();
-  const pi = { on(name: string, handler: Handler) {
-    handlers.set(name, [...handlers.get(name) ?? [], handler]);
-  } } as unknown as ExtensionAPI;
+  const completions = new Map<string, (prefix: string) => readonly { value: string; label: string }[] | null>();
+  const commands = new Map<string, CommandHandler>();
+  const pi = {
+    on(name: string, handler: Handler) {
+      handlers.set(name, [...handlers.get(name) ?? [], handler]);
+    },
+    registerCommand(name: string, definition: { handler: CommandHandler; getArgumentCompletions?: (prefix: string) => readonly { value: string; label: string }[] | null }) {
+      commands.set(name, definition.handler);
+      if (definition.getArgumentCompletions) completions.set(name, definition.getArgumentCompletions);
+    },
+  } as unknown as ExtensionAPI;
+  const statuses = new Map<string, string | undefined>();
   const model = { provider: "test", id: "main" } as PredictionModel;
   let calls = 0;
   let compatCalls = 0;
@@ -38,6 +50,9 @@ function harness(runtime: "pi" | "omp" = "pi", overrides: Record<string, unknown
     ui: {
       theme: {},
       getEditorText: () => text,
+      setStatus(key: string, value: string | undefined) {
+        statuses.set(key, value);
+      },
       getEditorComponent: () => factory,
       setEditorComponent(next: Factory | undefined) {
         factory = next;
@@ -71,8 +86,17 @@ function harness(runtime: "pi" | "omp" = "pi", overrides: Record<string, unknown
     get calls() { return calls; },
     get compatCalls() { return compatCalls; },
     get installations() { return installations; },
+    get statuses() { return statuses; },
     async emit(name: string, event: Record<string, unknown> = {}) {
       for (const handler of handlers.get(name) ?? []) await handler(event, context as unknown as ExtensionContext);
+    },
+    async command(args = "", name = "prompt-predict") {
+      const command = commands.get(name);
+      if (!command) throw new Error(`${name} command was not registered`);
+      await command(args, context as unknown as ExtensionContext);
+    },
+    completeArgs(prefix = "", name = "prompt-predict") {
+      return completions.get(name)?.(prefix);
     },
   };
 }
@@ -149,4 +173,89 @@ describe("prediction runtime lifecycle", () => {
       expect(h.calls).toBe(0);
     });
   }
+
+  test("/prompt-predict starts an idle prediction and keeps an existing result", async () => {
+    const h = harness();
+    await h.emit("session_start");
+    await h.command();
+    expect(h.calls).toBe(1);
+    await h.command();
+    expect(h.calls).toBe(1);
+  });
+
+  test("/prompt-predict refresh replaces an existing prediction", async () => {
+    const h = harness();
+    await h.emit("session_start");
+    await h.command();
+    await h.command("refresh");
+    expect(h.calls).toBe(2);
+  });
+
+  test("plain prompt-predict preserves an existing prediction after its command input event", async () => {
+    const h = harness();
+    await h.emit("session_start");
+    await h.command();
+    await h.emit("input", { text: "/prompt-predict" });
+    await h.command();
+    expect(h.calls).toBe(1);
+  });
+
+  test("typing prompt-predict does not clear the existing prediction", async () => {
+    const h = harness();
+    await h.emit("session_start");
+    await h.command();
+    h.editor.setText("/prompt-predict");
+    h.editor.setText("");
+    await h.command();
+    expect(h.calls).toBe(1);
+  });
+
+  test("input events do not clear an already offered prediction", async () => {
+    const h = harness();
+    await h.emit("session_start");
+    await h.command();
+    await h.emit("input", { text: "prompt-predict command" });
+    await h.command();
+    expect(h.calls).toBe(1);
+  });
+
+  test("recognizes command input without a leading slash", async () => {
+    const h = harness();
+    await h.emit("session_start");
+    await h.command();
+    await h.emit("input", { text: "prompt-predict" });
+    await h.command();
+    expect(h.calls).toBe(1);
+  });
+
+  test("offers refresh as a prompt-predict argument completion", () => {
+    const h = harness();
+    expect(h.completeArgs("r")).toEqual([{ value: "refresh", label: "refresh" }]);
+    expect(h.completeArgs("x")).toBeNull();
+  });
+
+  test("/prompt-predict does not request while the agent is busy", async () => {
+    const h = harness("pi", { isIdle: () => false });
+    await h.emit("session_start");
+    await h.command();
+    expect(h.calls).toBe(0);
+  });
+
+  test("/prompt-predict ignores duplicate requests while prediction is pending", async () => {
+    const h = harness();
+    let requests = 0;
+    const { promise: result, resolve: finish } = Promise.withResolvers<{ role: string; content: [{ type: "text"; text: string }]; stopReason: string }>();
+    h.context.modelRegistry.streamSimple = () => {
+      requests++;
+      return { result: async () => await result as unknown as AssistantMessage };
+    };
+    await h.emit("session_start");
+    const first = h.command();
+    await flush();
+    expect(requests).toBe(1);
+    await h.command();
+    expect(requests).toBe(1);
+    finish();
+    await first;
+  });
 });

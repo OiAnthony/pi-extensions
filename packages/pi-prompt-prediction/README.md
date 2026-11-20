@@ -27,6 +27,10 @@ Pi 的预测只在编辑器获得焦点、光标位于草稿末尾且补全菜�
 
 接受预测后，按 Ctrl+C 清空草稿，可再次按 Tab 或 → 填入同一预测，不增加模型请求。输入不匹配的内容、提交 prompt、开始新轮次或切换模型、session 后，原预测不再保留。
 
+## 主动预测
+
+可在编辑器为空且 Agent idle 时使用 `/prompt-predict` 主动触发预测。预测进行中重复执行会被忽略；已有预测时 `/prompt-predict` 保留当前结果，使用 `/prompt-predict refresh` 才会取消旧结果并重新请求。Agent 忙碌、存在待处理消息或没有有效模型时不会发起请求。预测进行中会直接在 editor 输入区以灰色隐式文本显示 `Predicting next prompt…`，不写入草稿，也不会被 Tab 或 → 接受。OMP 已有内置 `/predict` 命令，因此本扩展使用 `/prompt-predict` 避免冲突。
+
 ## 模型选择
 
 模型链路按宿主能力决定：

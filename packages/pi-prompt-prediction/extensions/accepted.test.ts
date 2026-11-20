@@ -30,6 +30,7 @@ async function harness() {
   const handlers = new Map<string, (event: unknown, context: ExtensionContext) => void>();
   const editor = new DraftEditor();
   const rendered = Promise.withResolvers<void>();
+  let renderRequests = 0;
   let factory: EditorFactory | undefined = () => editor as unknown as CustomEditor;
   let requests = 0;
   const model = { provider: "test", id: "main" } as PredictionModel;
@@ -37,7 +38,7 @@ async function harness() {
     getEditorComponent: () => factory,
     setEditorComponent(next) {
       factory = next;
-      next?.({ requestRender: rendered.resolve } as Parameters<EditorFactory>[0],
+      next?.({ requestRender: () => { if (++renderRequests >= 2) rendered.resolve(); } } as Parameters<EditorFactory>[0],
         {} as Parameters<EditorFactory>[1], {} as Parameters<EditorFactory>[2]);
       editor.predictions = () => undefined;
     },
@@ -64,6 +65,7 @@ async function harness() {
   } as unknown as ExtensionContext;
   register({
     on: (name: string, handler: (event: unknown, context: ExtensionContext) => void) => handlers.set(name, handler),
+    registerCommand: () => {},
   } as unknown as ExtensionAPI, {
     complete: async () => {
       requests++;
