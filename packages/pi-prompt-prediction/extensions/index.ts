@@ -25,31 +25,42 @@ export default function register(pi: ExtensionAPI, dependencies?: PredictionDepe
     editor?.dispose();
     editor = undefined;
     const omp = context as OmpContext;
-    if (!omp.hasUI || omp.mode !== "tui" || omp.agent?.kind !== "main") return;
+    if (!omp.hasUI || omp.mode !== "tui" || (omp.agent && omp.agent.kind !== "main")) return;
     editor = installPredictionEditor(omp.ui, {
       choices: () => controller.choices,
       accepted: () => {
         clearScheduled();
-        // Acceptance fills a draft, not a submission. Keep it reusable after clearing.
         controller.draftChanged(omp.ui.getEditorText());
       },
+      cancelled: cancel,
       draftChanged: (text) => {
         clearScheduled();
         controller.draftChanged(text);
       },
-    });
+    }, omp.agent ? "omp" : "pi");
   });
+
+  const schedule = (context: OmpContext): void => {
+    // Defer past the host's final idle-state transition and other event handlers.
+    scheduled = setTimeout(() => {
+      scheduled = undefined;
+      void controller.request(context);
+    }, 0);
+  };
 
   pi.on("agent_end", (event, context) => {
     cancel();
     const omp = context as OmpContext;
     const willContinue = "willContinue" in event && event.willContinue === true;
     if (!editor || !omp.hasUI || omp.mode !== "tui" || omp.agent?.kind !== "main" || willContinue) return;
-    // agent_end can precede the host's final idle-state transition.
-    scheduled = setTimeout(() => {
-      scheduled = undefined;
-      void controller.request(omp);
-    }, 0);
+    schedule(omp);
+  });
+
+  pi.on("agent_settled", (_event, context) => {
+    const omp = context as OmpContext;
+    if (omp.agent) return;
+    cancel();
+    if (editor && omp.hasUI && omp.mode === "tui") schedule(omp);
   });
 
   pi.on("input", cancel);
