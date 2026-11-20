@@ -1,5 +1,11 @@
 # @oipsanthony/pi-prompt-prediction
 
+## 0.2.2
+
+### Patch Changes
+
+- 移除对 `pi-model-roles` 的运行时依赖，让 Pi 在没有原生 `@smol` 解析器时使用当前模型。
+
 ## 0.2.1
 
 ### Patch Changes

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { normalizeModelRoles } from "@oipsanthony/pi-model-roles";
 import {
   PromptPredictionController,
   type PredictionContext,
@@ -11,7 +10,6 @@ import {
 
 const main = { provider: "test", id: "main" } as PredictionModel;
 const smol = { provider: "test", id: "smol" } as PredictionModel;
-const roles = normalizeModelRoles({ roles: { smol: "test/smol:low" } });
 
 function response(text: string, stopReason = "stop"): AssistantMessage {
   return { role: "assistant", content: [{ type: "text", text }], stopReason } as AssistantMessage;
@@ -33,8 +31,10 @@ function fixture() {
   const context: PredictionContext = {
     model: main,
     modelRegistry: {
-      find: (provider, id) => provider === "test" ? [main, smol].find((model) => model.id === id) : undefined,
       getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: { "x-test": "yes" }, env: { TEST: "yes" } }),
+    },
+    models: {
+      resolve: (spec) => spec === "@smol" ? smol : undefined,
     },
     ui: { getEditorText: () => state.draft },
     isIdle: () => state.idle,
@@ -52,7 +52,6 @@ function setup(implementation: PredictionDependencies["complete"], overrides: Pa
   let renders = 0;
   const controller = new PromptPredictionController(() => renders++, {
     complete: implementation,
-    modelRoles: roles,
     ...overrides,
   });
   return { controller, renders: () => renders };
@@ -89,44 +88,42 @@ describe("prediction model chain", () => {
     assert.equal(controller.choices, undefined);
   });
 
-  test("deduplicates smol resolving to the main provider/id", async () => {
+  test("deduplicates native smol resolving to the main provider/id", async () => {
     const { context } = fixture();
+    context.models = { resolve: () => main };
     let calls = 0;
-    const { controller } = setup(async () => { calls++; return response("", "error"); }, {
-      modelRoles: normalizeModelRoles({ roles: { smol: "test/main" } }),
-    });
+    const { controller } = setup(async () => { calls++; return response("", "error"); });
     await controller.request(context);
     assert.equal(calls, 1);
     assert.equal(controller.choices, undefined);
   });
 
-  for (const missing of ["role", "model", "auth"] as const) {
-    test(`uses main for missing ${missing}`, async () => {
-      const { context } = fixture();
-      if (missing === "model") context.modelRegistry.find = () => undefined;
-      if (missing === "auth") context.modelRegistry.getApiKeyAndHeaders = async (model) => ({ ok: model === main });
-      const calls: PredictionModel[] = [];
-      const { controller } = setup(async (model) => { calls.push(model); return response("继续"); },
-        missing === "role" ? { modelRoles: normalizeModelRoles({}) } : {});
-      await controller.request(context);
-      assert.deepEqual(calls, [main]);
-      assert.deepEqual(controller.choices, ["继续"]);
+  test("uses the current model when the host has no native smol resolver", async () => {
+    const { context } = fixture();
+    context.models = undefined;
+    const calls: PredictionModel[] = [];
+    const { controller } = setup(async (model) => {
+      calls.push(model);
+      return response("继续");
     });
-  }
+    await controller.request(context);
+    assert.deepEqual(calls, [main]);
+    assert.deepEqual(controller.choices, ["继续"]);
+  });
 
-  test("native smol takes precedence over the shared role configuration", async () => {
+  test("uses the native smol resolver when the host provides one", async () => {
     const { context } = fixture();
     const requests: string[] = [];
-    context.models = { resolve: (spec) => { requests.push(spec); return main; } };
+    context.models = { resolve: (spec) => { requests.push(spec); return smol; } };
     const calls: PredictionModel[] = [];
     const { controller } = setup(async (model) => { calls.push(model); return response("继续"); });
     await controller.request(context);
     assert.deepEqual(requests, ["@smol"]);
-    assert.deepEqual(calls, [main]);
+    assert.deepEqual(calls, [smol]);
   });
 
   for (const behavior of ["missing", "throws"] as const) {
-    test(`native smol ${behavior} bypasses the shared role`, async () => {
+    test(`native smol ${behavior} falls back to the current model`, async () => {
       const { context } = fixture();
       context.models = { resolve: () => { if (behavior === "throws") throw new Error("missing"); return undefined; } };
       const calls: PredictionModel[] = [];
@@ -136,6 +133,58 @@ describe("prediction model chain", () => {
     });
   }
 
+  test("native smol authentication failure falls back to the current model", async () => {
+    const { context } = fixture();
+    context.modelRegistry.getApiKeyAndHeaders = async (model) => ({ ok: model === main });
+    const calls: PredictionModel[] = [];
+    const { controller } = setup(async (model) => {
+      calls.push(model);
+      return response("继续");
+    });
+    await controller.request(context);
+    assert.deepEqual(calls, [main]);
+    assert.deepEqual(controller.choices, ["继续"]);
+  });
+
+  test("uses the host registry for native smol and main with cancellation", async () => {
+    const { context } = fixture();
+    const calls: PredictionModel[] = [];
+    context.modelRegistry.streamSimple = (model, request, options) => {
+      calls.push(model);
+      assert.equal(options?.maxTokens, 512);
+      assert.ok(options?.signal instanceof AbortSignal);
+      assert.equal(request.messages.length, 1);
+      assert.equal("apiKey" in options!, false);
+      assert.equal("reasoning" in options!, false);
+      return { result: async () => model === smol ? response("", "error") : response("加一个回归测试") };
+    };
+    const { controller } = setup(async () => { throw new Error("compat must not run for a host registry"); });
+    await controller.request(context);
+    assert.deepEqual(calls, [smol, main]);
+    assert.deepEqual(controller.choices, ["加一个回归测试"]);
+  });
+
+  test("Pi registry cancellation settles even if the stream ignores abort", async () => {
+    const { context } = fixture();
+    const started = Promise.withResolvers<void>();
+    const result = Promise.withResolvers<AssistantMessage>();
+    let calls = 0;
+    context.modelRegistry.streamSimple = () => {
+      calls++;
+      started.resolve();
+      return { result: () => result.promise };
+    };
+    const { controller } = setup(async () => { throw new Error("compat must not run"); });
+    const request = controller.request(context);
+    await started.promise;
+    controller.cancel();
+    await request;
+    result.resolve(response("stale"));
+    await Promise.resolve();
+    assert.equal(calls, 1);
+    assert.equal(controller.choices, undefined);
+  });
+
   test("main uses the cache-preserving ephemeral API without custom token limits", async () => {
     const { context } = fixture();
     let nativeCalls = 0;
@@ -144,7 +193,8 @@ describe("prediction model chain", () => {
       if ("maxTokens" in options) throw new Error("This transport rejects caller output limits before inference");
       return { replyText: "`加一个回归测试`", assistantMessage: { stopReason: "stop" } };
     };
-    const { controller } = setup(async () => { throw new Error("direct completion must not run"); }, { modelRoles: normalizeModelRoles({}) });
+    context.models = undefined;
+    const { controller } = setup(async () => { throw new Error("direct completion must not run"); });
     await controller.request(context);
     assert.equal(nativeCalls, 1);
     assert.deepEqual(controller.choices, ["加一个回归测试"]);

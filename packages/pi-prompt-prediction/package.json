@@ -1,7 +1,7 @@
 {
   "name": "@oipsanthony/pi-prompt-prediction",
-  "version": "0.2.1",
-  "description": "Predict the next OMP prompt with native composer ghost text and a smol-to-main model chain.",
+  "version": "0.2.2",
+  "description": "Predict the next Pi or OMP prompt with composer ghost text and a smol-to-main model chain.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -25,6 +25,7 @@
     "LICENSE",
     "extensions/index.ts",
     "extensions/editor.ts",
+    "extensions/pi-editor.ts",
     "extensions/prediction.ts",
     "package.json",
     "README.md"
@@ -36,12 +37,10 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@oipsanthony/pi-model-roles": "^0.2.0"
-  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "pi": {
     "extensions": [

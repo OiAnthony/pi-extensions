@@ -1,8 +1,10 @@
 import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { installPiPredictions } from "./pi-editor.js";
 
 export interface PredictionEditorHooks {
   choices(): readonly string[] | undefined;
   accepted(): void;
+  cancelled(): void;
   draftChanged(text: string): void;
 }
 
@@ -11,7 +13,7 @@ export interface PredictionEditorBinding {
   dispose(): void;
 }
 
-type EditorUI = Pick<ExtensionContext["ui"], "getEditorComponent" | "setEditorComponent">;
+type EditorUI = Pick<ExtensionContext["ui"], "getEditorComponent" | "setEditorComponent" | "theme">;
 type EditorFactory = NonNullable<Parameters<EditorUI["setEditorComponent"]>[0]>;
 
 // OMP provides these fields natively; the installed Pi peer types do not yet expose them.
@@ -25,6 +27,7 @@ interface NativePredictions {
 export function installPredictionEditor(
   ui: EditorUI,
   hooks: PredictionEditorHooks,
+  runtime: "pi" | "omp" = "omp",
 ): PredictionEditorBinding {
   const previousFactory = ui.getEditorComponent();
   const cleanups = new Map<object, () => void>();
@@ -81,20 +84,24 @@ export function installPredictionEditor(
       });
     }
 
-    intercept("predictions", read => () => {
-      const choices = disposed ? undefined : hooks.choices();
-      extensionPrediction = !!choices?.length;
-      return extensionPrediction ? choices : read()?.call(native);
-    });
-    intercept("onPredictionAccepted", read => index => {
-      // Attribution follows the provider actually used by the native editor,
-      // not hooks.choices() after native insertion has already changed the draft.
-      if (!disposed && extensionPrediction) hooks.accepted();
-      else read()?.call(native, index);
-    });
-    intercept("onPredictionShown", read => () => {
-      if (disposed || !extensionPrediction) read()?.call(native);
-    });
+    if (runtime === "omp") {
+      intercept("predictions", read => () => {
+        const choices = disposed ? undefined : hooks.choices();
+        extensionPrediction = !!choices?.length;
+        return extensionPrediction ? choices : read()?.call(native);
+      });
+      intercept("onPredictionAccepted", read => index => {
+        // Attribution follows the provider actually used by the native editor,
+        // not hooks.choices() after native insertion has already changed the draft.
+        if (!disposed && extensionPrediction) hooks.accepted();
+        else read()?.call(native, index);
+      });
+      intercept("onPredictionShown", read => () => {
+        if (disposed || !extensionPrediction) read()?.call(native);
+      });
+    } else {
+      restore.push(installPiPredictions(editor, () => ui.theme, keybindings, hooks));
+    }
 
     let lastText = editor.getText();
     intercept("onChange", read => text => {

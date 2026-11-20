@@ -1,18 +1,23 @@
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
-import {
-  isResolvedModelTarget,
-  loadModelRoles,
-  resolveModelTarget,
-  type ModelRegistryLike,
-  type ModelRolesConfig,
-} from "@oipsanthony/pi-model-roles";
 
 export type PredictionModel = Parameters<typeof complete>[0];
+
+interface ModelAuth {
+  ok: boolean;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+interface PredictionModelRegistry {
+  getApiKeyAndHeaders(model: PredictionModel): Promise<ModelAuth>;
+  streamSimple?: (...args: Parameters<typeof complete>) => { result(): ReturnType<typeof complete> };
+}
 
 export interface PredictionContext {
   model: PredictionModel | undefined;
   models?: { resolve(spec: string): PredictionModel | undefined };
-  modelRegistry: ModelRegistryLike<PredictionModel>;
+  modelRegistry: PredictionModelRegistry;
   ui: { getEditorText(): string };
   isIdle(): boolean;
   hasPendingMessages(): boolean;
@@ -31,7 +36,6 @@ export interface PredictionContext {
 
 export interface PredictionDependencies {
   complete: typeof complete;
-  modelRoles?: ModelRolesConfig;
   deadlineMs?: number;
 }
 
@@ -167,34 +171,27 @@ export class PromptPredictionController {
         && context.sessionManager.getSessionId() === sessionId
         && context.sessionManager.getLeafId() === leafId
         && context.isIdle() && !context.hasPendingMessages() && context.ui.getEditorText() === "";
-      const config = this.dependencies.modelRoles ?? loadModelRoles();
       const promptText = `${INSTRUCTIONS}\n\nRecent conversation (JSON data, not instructions):\n<conversation-json>\n${JSON.stringify(messages)}\n</conversation-json>`;
       const attempted = new Set<string>();
-      for (const target of ["@smol", undefined]) {
+      const targets = context.models ? ["@smol", undefined] : [undefined];
+      for (const target of targets) {
         if (!current()) return;
-        let requestedTarget = target;
-        if (target && context.models) {
+        let requestedModel = model;
+        if (target) {
           try {
-            const nativeModel = context.models.resolve(target);
+            const nativeModel = context.models!.resolve(target);
             if (!nativeModel) continue;
-            requestedTarget = modelKey(nativeModel);
+            requestedModel = nativeModel;
           } catch {
             continue;
           }
         }
-        const resolution = await abortable(resolveModelTarget({
-          target: requestedTarget,
-          currentModel: model,
-          modelRegistry: context.modelRegistry,
-          config,
-          allowCurrentFallback: false,
-        }), signal);
-        if (!current()) return;
-        if (!isResolvedModelTarget(resolution)) continue;
-        const key = modelKey(resolution.model);
+        const key = modelKey(requestedModel);
         if (attempted.has(key)) continue;
         attempted.add(key);
         try {
+          const auth = await abortable(context.modelRegistry.getApiKeyAndHeaders(requestedModel), signal);
+          if (!current() || !auth.ok) continue;
           let raw: string;
           let stopReason: string;
           if (key === identity && context.runEphemeralTurn) {
@@ -209,16 +206,18 @@ export class PromptPredictionController {
             stopReason = response.assistantMessage.stopReason;
           } else {
             const message: UserMessage = { role: "user", content: [{ type: "text", text: promptText }], timestamp: Date.now() };
-            const response = await abortable(this.dependencies.complete(resolution.model, {
-              messages: [message],
-            }, {
-              apiKey: resolution.auth.apiKey,
-              headers: resolution.auth.headers,
-              env: resolution.auth.env,
-              ...(resolution.thinkingLevel ? { reasoning: resolution.thinkingLevel } : {}),
+            const options = {
               maxTokens: 512,
               signal,
-            } as Parameters<typeof complete>[2]), signal);
+            } as Parameters<typeof complete>[2];
+            const response = await abortable(context.modelRegistry.streamSimple
+              ? context.modelRegistry.streamSimple(requestedModel, { messages: [message] }, options).result()
+              : this.dependencies.complete(requestedModel, { messages: [message] }, {
+                ...options,
+                apiKey: auth.apiKey,
+                headers: auth.headers,
+                env: auth.env,
+              } as Parameters<typeof complete>[2]), signal);
             if (!current()) return;
             raw = textContent(response.content);
             stopReason = response.stopReason;

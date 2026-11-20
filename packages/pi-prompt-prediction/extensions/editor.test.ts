@@ -60,6 +60,7 @@ function harness(initial?: FakeEditor) {
   let factory: EditorFactory | undefined = previousFactory;
   const tui = { requestRender: () => { renders++; } } as Parameters<EditorFactory>[0];
   const ui: EditorUI = {
+    theme: {} as EditorUI["theme"],
     getEditorComponent: () => factory,
     setEditorComponent(next) {
       sets++;
@@ -90,6 +91,9 @@ function harness(initial?: FakeEditor) {
     choices: () => choices,
     accepted() {
       accepted++;
+      choices = undefined;
+    },
+    cancelled() {
       choices = undefined;
     },
     draftChanged(text) {
