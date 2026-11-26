@@ -1,8 +1,8 @@
 # pi-prompt-prediction
 
-在 Pi 或 OMP 完整轮次结束后预测下一个 prompt，并在输入框显示灰色预测文本（ghost text）。按 Tab 或 → 填入草稿，不自动发送。
+在 Pi 或 OMP 完整轮次结束后预测下一个 prompt：Pi 在输入框内显示灰色预测文本（ghost text），OMP 19.x 在输入框上方以单行预测提示条显示。按 Tab（或空草稿时按 →）填入草稿，不自动发送。
 
-支持 Pi 和 OMP 的交互式主 session，不为 RPC、JSON、print 模式或 OMP subagent 发起预测。Pi 使用 `agent_settled` 等待自动重试和排队消息结束；OMP 使用完整轮次的 `agent_end`。已在 Pi 1.5.2 和 OMP 18.18.7 验证预测显示。
+支持 Pi 和 OMP 的交互式主 session，不为 RPC、JSON、print 模式或 OMP subagent 发起预测。Pi 使用 `agent_settled` 等待自动重试和排队消息结束；OMP 使用完整轮次的 `agent_end`。
 
 ## 本地使用
 
@@ -60,7 +60,7 @@ OMP 的主模型优先使用 `runEphemeralTurn`，复用宿主上下文及其 pr
 
 已有草稿、待处理消息、未完成的自动续跑或最近 assistant 失败时，不请求预测。输入、开始新轮次、切换模型或 session、分叉、树导航、压缩及关闭 session 时，取消未完成请求。旧 session、旧叶节点和旧模型的迟到结果不会显示。预测只模仿键盘前用户，不应模仿 IRC 或其他 Agent 的转发内容。
 
-OMP 复用原生编辑器的显示、前缀匹配、接受和撤销逻辑。Pi 包装现有编辑器的渲染和按键处理，接受前不改动实际草稿。两者均组合已有自定义编辑器 factory；后加载的编辑器扩展仍需组合当前 factory，不能直接替换并丢弃它。Pi 的自定义编辑器需提供与 `CustomEditor` 相同的焦点、光标位置、补全状态和文本插入能力，否则不显示预测。
+OMP 19.x 通过 `ctx.ui.composer`（`addKeyHandler`、`addDecorator`）与 `ctx.ui.setWidget(..., { placement: "aboveEditor" })` 在输入框上方展示单行预测提示条；空草稿时按 Tab 或 → 接受，输入匹配前缀时按 Tab 接受，按 Escape 清除。Pi 仅在 Pi 运行时按需加载编辑器包装，接受前不改动实际草稿，并组合已有自定义编辑器 factory；后加载的编辑器扩展仍需组合当前 factory，不能直接替换并丢弃它。Pi 的自定义编辑器需提供与 `CustomEditor` 相同的焦点、光标位置、补全状态和文本插入能力，否则不显示预测。
 
 ## 开发验证
 

@@ -47,19 +47,36 @@ function harness(runtime: "pi" | "omp" = "pi", overrides: Record<string, unknown
         return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "继续" }], stopReason: "stop" }) };
       },
     },
-    ui: {
-      theme: {},
-      getEditorText: () => text,
-      setStatus(key: string, value: string | undefined) {
-        statuses.set(key, value);
+    ui: runtime === "omp"
+      ? {
+        theme: { fg: (_color: string, value: string) => value },
+        composer: {
+          addKeyHandler: () => {
+            installations++;
+            return () => {};
+          },
+          addDecorator: () => () => {},
+        },
+        getEditorText: () => text,
+        setEditorText: (value: string) => { text = value; },
+        setStatus(key: string, value: string | undefined) {
+          statuses.set(key, value);
+        },
+        setWidget: () => {},
+      }
+      : {
+        theme: {},
+        getEditorText: () => text,
+        setStatus(key: string, value: string | undefined) {
+          statuses.set(key, value);
+        },
+        getEditorComponent: () => factory,
+        setEditorComponent(next: Factory | undefined) {
+          factory = next;
+          installations++;
+          next?.({ requestRender() {} } as Parameters<Factory>[0], {} as Parameters<Factory>[1], {} as Parameters<Factory>[2]);
+        },
       },
-      getEditorComponent: () => factory,
-      setEditorComponent(next: Factory | undefined) {
-        factory = next;
-        installations++;
-        next?.({ requestRender() {} } as Parameters<Factory>[0], {} as Parameters<Factory>[1], {} as Parameters<Factory>[2]);
-      },
-    },
     isIdle: () => true,
     hasPendingMessages: () => false,
     sessionManager: {

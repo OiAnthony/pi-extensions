@@ -1,278 +1,221 @@
 import { describe, expect, test } from "bun:test";
-import { CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { installPredictionEditor, type PredictionEditorHooks } from "./editor.js";
+import {
+  PREDICTION_WIDGET_KEY,
+  installOmpPredictionComposer,
+  type OmpComposerKey,
+  type OmpPredictionUI,
+  type OmpWidgetFactory,
+  type PredictionEditorHooks,
+} from "./editor.js";
 
-type EditorUI = Parameters<typeof installPredictionEditor>[0];
-type EditorFactory = NonNullable<Parameters<EditorUI["setEditorComponent"]>[0]>;
-
-class FakeEditor {
-  text = "";
-  predictions?: () => readonly string[] | undefined;
-  onPredictionAccepted?: (index: number) => void;
-  onPredictionShown?: () => void;
-  onChange?: (text: string) => void;
-
-  getText() {
-    return this.text;
-  }
-
-  setText(text: string) {
-    this.text = text;
-    this.onChange?.(this.text);
-  }
-
-  render(_width: number) {
-    return [CURSOR_MARKER];
-  }
-
-  handleInput(input: string) {
-    if (input === "arrow") return;
-    if (input === "nested") {
-      this.setText(`${this.text}!`);
-      return;
-    }
-    if (input === "tab") {
-      const choices = this.predictions?.();
-      if (choices?.[0]?.startsWith(this.text)) {
-        // Native OMP inserts through a private method, not public setText.
-        this.text = choices[0];
-        this.onChange?.(this.text);
-        this.onPredictionAccepted?.(0);
-      }
-      return;
-    }
-    this.text += input;
-    this.onChange?.(this.text);
-  }
-
-  mutatePrivately(text: string) {
-    this.text = text;
-    this.onChange?.(this.text);
-  }
-}
-
-function harness(initial?: FakeEditor) {
-  const nativeAccepted: number[] = [];
-  const nativeChanges: string[] = [];
-  let nativeShown = 0;
-  let renders = 0;
-  let sets = 0;
-  let current = initial ?? new FakeEditor();
-  const previousFactory: EditorFactory = () => {
-    // Only this test boundary adapts the small fake to the host editor type.
-    return current as unknown as ReturnType<EditorFactory>;
-  };
-  let factory: EditorFactory | undefined = previousFactory;
-  const tui = { requestRender: () => { renders++; } } as Parameters<EditorFactory>[0];
-  const ui: EditorUI = {
-    theme: { fg: (_color: string, text: string) => text } as EditorUI["theme"],
-    getEditorComponent: () => factory,
-    setEditorComponent(next) {
-      sets++;
-      factory = next;
-      if (!next) return;
-      const keybindings = { matches: (input: string, binding: string) => input === "tab" && binding === "tui.input.tab" };
-      const editor = next(tui, {} as Parameters<EditorFactory>[1], keybindings as Parameters<EditorFactory>[2]);
-      current = editor as unknown as FakeEditor;
-      // Faithfully reproduce host assignments after the factory returns.
-      current.predictions = () => ["native suggestion"];
-      current.onPredictionAccepted = function (index) {
-        expect(this).toBe(current);
-        nativeAccepted.push(index);
-      };
-      current.onPredictionShown = function () {
-        expect(this).toBe(current);
-        nativeShown++;
-      };
-      current.onChange = function (text) {
-        expect(this).toBe(current);
-        nativeChanges.push(text);
-      };
+function harness(initialChoice: string | undefined = "extension suggestion", initialStatus?: string) {
+  let text = "";
+  let choices: readonly string[] | undefined = initialChoice ? [initialChoice] : undefined;
+  let status: string | undefined = initialStatus;
+  let accepted = 0;
+  let cancelled = 0;
+  const drafts: string[] = [];
+  const keyHandlers = new Set<(key: OmpComposerKey) => boolean>();
+  const decorators = new Set<(text: string) => ReadonlyArray<{ from: number; to: number; s: string }>>();
+  let widget: string[] | OmpWidgetFactory | undefined;
+  let widgetRows: { render(width: number): string[] } | undefined;
+  let widgetPlacement: "aboveEditor" | "belowEditor" | undefined;
+  let setWidgetCalls = 0;
+  let widgetRenderRequests = 0;
+  const widgetTui = {
+    requestRender() {
+      widgetRenderRequests++;
     },
   };
-  let choices: readonly string[] | undefined = ["extension suggestion"];
-  let accepted = 0;
-  let status: string | undefined;
-  const drafts: string[] = [];
+  const theme = {
+    fg: (color: "accent" | "dim" | "muted", value: string) => `<${color}>${value}</${color}>`,
+  };
+
+  const ui: OmpPredictionUI = {
+    theme,
+    composer: {
+      addKeyHandler(handler) {
+        keyHandlers.add(handler);
+        return () => { keyHandlers.delete(handler); };
+      },
+      addDecorator(decorator) {
+        decorators.add(decorator);
+        return () => { decorators.delete(decorator); };
+      },
+    },
+    getEditorText: () => text,
+    setEditorText(next: string) {
+      text = next;
+      for (const decorator of decorators) decorator(text);
+    },
+    setWidget(key, content, options) {
+      expect(key).toBe(PREDICTION_WIDGET_KEY);
+      setWidgetCalls++;
+      widget = content;
+      widgetPlacement = options?.placement;
+      widgetRows = typeof content === "function" ? content(widgetTui, theme) : undefined;
+    },
+  };
+
   const hooks: PredictionEditorHooks = {
     choices: () => choices,
     status: () => status,
     accepted() {
       accepted++;
-      choices = undefined;
+      if (choices && !choices[0]!.startsWith(text)) choices = undefined;
     },
     cancelled() {
+      cancelled++;
       choices = undefined;
     },
-    draftChanged(text) {
-      drafts.push(text);
-      if (choices && !choices.some(choice => choice.startsWith(text))) choices = undefined;
+    draftChanged(next) {
+      drafts.push(next);
+      if (choices && !choices[0]!.startsWith(next)) choices = undefined;
     },
+  };
+
+  const press = (id: string): boolean => {
+    for (const handler of keyHandlers) {
+      if (handler({ id })) return true;
+    }
+    return false;
+  };
+
+  const renderWidget = (width = 80): string[] | undefined => {
+    if (!widget) return undefined;
+    if (Array.isArray(widget)) return widget;
+    return (widgetRows ?? widget(widgetTui, theme)).render(width);
   };
   return {
     ui,
     hooks,
-    previousFactory,
-    nativeAccepted,
     drafts,
-    nativeChanges,
-    get editor() { return current; },
-    get nativeShown() { return nativeShown; },
-    get renders() { return renders; },
-    get sets() { return sets; },
+    press,
+    renderWidget,
+    type(next: string) {
+      text = next;
+      for (const decorator of decorators) decorator(text);
+    },
+    get text() { return text; },
     get accepted() { return accepted; },
+    get cancelled() { return cancelled; },
+    get widgetPlacement() { return widgetPlacement; },
+    get setWidgetCalls() { return setWidgetCalls; },
+    get widgetRenderRequests() { return widgetRenderRequests; },
+    get keyHandlerCount() { return keyHandlers.size; },
+    get decoratorCount() { return decorators.size; },
     set choices(value: readonly string[] | undefined) { choices = value; },
     set status(value: string | undefined) { status = value; },
   };
 }
 
-describe("native prediction editor integration", () => {
-  test("survives host post-factory assignment and attributes extension acceptance only to hooks", () => {
-    const h = harness();
-    const original = h.editor;
-    const binding = installPredictionEditor(h.ui, h.hooks);
-    expect(h.editor).toBe(original);
-    expect(h.editor.predictions?.()).toEqual(["extension suggestion"]);
-    h.editor.onPredictionShown?.();
-    expect(h.nativeShown).toBe(0);
-    h.editor.handleInput("tab");
-    expect(h.editor.getText()).toBe("extension suggestion");
-    expect(h.accepted).toBe(1);
-    expect(h.nativeAccepted).toEqual([]);
-    expect(h.drafts).toEqual(["extension suggestion"]);
+describe("OMP 19.x prediction composer integration", () => {
+  test("renders above-editor widget with a bottom spacer row, refreshes in place, and accepts with Tab or empty Right", () => {
+    const h = harness("加一个中文回归测试");
+    const binding = installOmpPredictionComposer(h.ui, h.hooks);
+
     binding.requestRender();
-    expect(h.renders).toBe(1);
-  });
+    expect(h.setWidgetCalls).toBe(1);
+    expect(h.widgetPlacement).toBe("aboveEditor");
+    expect(h.renderWidget(80)).toEqual(["<accent> ↳ </accent><muted>加一个中文回归测试</muted><dim>  [Tab / →]</dim>", " "]);
+    expect(h.renderWidget(24)).toEqual(["<accent> ↳ </accent><muted>加一个中…</muted><dim>  [Tab / →]</dim>", " "]);
 
-  test("renders progress status inline without accepting it", () => {
-    const h = harness();
-    installPredictionEditor(h.ui, h.hooks);
-    h.choices = undefined;
-    h.editor.predictions = () => undefined;
-    h.status = "Predicting next prompt…";
-    h.editor.render = () => [CURSOR_MARKER];
-    expect(h.editor.predictions?.()).toEqual(["Predicting next prompt…"]);
-    h.editor.handleInput("tab");
-    expect(h.editor.getText()).toBe("");
-    expect(h.accepted).toBe(0);
-  });
-
-  test("preserves native provider and callbacks when extension choices are absent or empty", () => {
-    const h = harness();
-    installPredictionEditor(h.ui, h.hooks);
-    for (const choices of [undefined, []]) {
-      h.choices = choices;
-      expect(h.editor.predictions?.()).toEqual(["native suggestion"]);
-      h.editor.onPredictionShown?.();
-      h.editor.onPredictionAccepted?.(2);
-    }
-    expect(h.nativeShown).toBe(2);
-    expect(h.nativeAccepted).toEqual([2, 2]);
-    expect(h.accepted).toBe(0);
-  });
-
-  test("uses supplied prediction attribution even if hooks have changed before the callback", () => {
-    const h = harness();
-    installPredictionEditor(h.ui, h.hooks);
-    h.editor.predictions?.();
-    h.choices = undefined;
-    h.editor.onPredictionAccepted?.(0);
+    expect(h.press("right")).toBe(true);
+    expect(h.text).toBe("加一个中文回归测试");
     expect(h.accepted).toBe(1);
-    expect(h.nativeAccepted).toEqual([]);
-    h.editor.predictions?.();
-    h.choices = ["new extension suggestion"];
-    h.editor.onPredictionAccepted?.(1);
-    expect(h.nativeAccepted).toEqual([1]);
-    expect(h.accepted).toBe(1);
-  });
+    expect(h.renderWidget(80)).toBeUndefined();
 
-  test("observes actual input and external setText changes once without swallowing editor behavior", () => {
-    const editor = new FakeEditor();
-    let customInputs = 0;
-    const originalInput = editor.handleInput;
-    editor.handleInput = function (input) {
-      customInputs++;
-      originalInput.call(this, input);
-    };
-    const h = harness(editor);
-    installPredictionEditor(h.ui, h.hooks);
-    editor.handleInput("arrow");
-    editor.setText("");
-    expect(h.drafts).toEqual([]);
-    editor.handleInput("e");
-    editor.handleInput("nested");
-    editor.setText("external replacement");
-    editor.setText("external replacement");
-    editor.mutatePrivately("native text assist");
-    editor.onChange?.("native text assist");
-    expect(customInputs).toBe(3);
-    expect(h.drafts).toEqual(["e", "e!", "external replacement", "native text assist"]);
-    expect(h.nativeChanges).toEqual(["", "e", "e!", "external replacement", "external replacement", "native text assist", "native text assist"]);
-  });
+    // Clearing the draft brings the still-matching prediction back.
+    h.type("");
+    expect(h.renderWidget(80)).toEqual(["<accent> ↳ </accent><muted>加一个中文回归测试</muted><dim>  [Tab / →]</dim>", " "]);
 
-  test("restores the previous factory once and releases native callbacks on dispose", () => {
-    const h = harness();
-    const originalInput = h.editor.handleInput;
-    const originalSetText = h.editor.setText;
-    const binding = installPredictionEditor(h.ui, h.hooks);
-    h.editor.predictions?.();
+    // Non-empty matching prefix updates in place via tui.requestRender without remounting.
+    const callsBeforePrefix = h.setWidgetCalls;
+    h.type("加一个");
+    expect(h.setWidgetCalls).toBe(callsBeforePrefix);
+    expect(h.widgetRenderRequests).toBe(1);
+    expect(h.renderWidget(80)).toEqual(["<accent> ↳ </accent><dim>加一个</dim><muted>中文回归测试</muted><dim>  [Tab]</dim>", " "]);
+    expect(h.press("right")).toBe(false);
+    expect(h.press("tab")).toBe(true);
+    expect(h.text).toBe("加一个中文回归测试");
+    expect(h.accepted).toBe(2);
+    expect(h.renderWidget(80)).toBeUndefined();
+
     binding.dispose();
-    expect(h.ui.getEditorComponent()).toBe(h.previousFactory);
-    expect(h.editor.handleInput).toBe(originalInput);
-    expect(h.editor.setText).toBe(originalSetText);
-    expect(h.editor.predictions?.()).toEqual(["native suggestion"]);
-    h.editor.onPredictionAccepted?.(3);
-    h.editor.onPredictionShown?.();
-    expect(h.nativeAccepted).toEqual([3]);
-    expect(h.nativeShown).toBe(1);
-    h.editor.mutatePrivately("after disposal");
-    expect(h.nativeChanges).toEqual(["after disposal"]);
-    expect(h.drafts).toEqual([]);
+  });
+
+  test("renders pending status on an empty draft without accepting Tab or Right, then switches to prediction", () => {
+    const h = harness("", "Predicting next prompt…");
+    const binding = installOmpPredictionComposer(h.ui, h.hooks);
+
+    binding.requestRender();
+    expect(h.renderWidget(80)).toEqual(["<accent> ↳ </accent><dim>Predicting next prompt…</dim>", " "]);
+    expect(h.press("tab")).toBe(false);
+    expect(h.press("right")).toBe(false);
+    expect(h.text).toBe("");
     expect(h.accepted).toBe(0);
+
+    h.status = undefined;
+    h.choices = ["继续测试"];
+    binding.requestRender();
+    expect(h.renderWidget(80)).toEqual(["<accent> ↳ </accent><muted>继续测试</muted><dim>  [Tab / →]</dim>", " "]);
+
+    h.choices = undefined;
+    binding.requestRender();
+    expect(h.renderWidget(80)).toBeUndefined();
+    binding.dispose();
+  });
+
+  test("Escape cancels an active prediction and passes through when none is shown", () => {
+    const h = harness("continue testing");
+    const binding = installOmpPredictionComposer(h.ui, h.hooks);
+    binding.requestRender();
+
+    expect(h.press("escape")).toBe(true);
+    expect(h.cancelled).toBe(1);
+    expect(h.renderWidget(80)).toBeUndefined();
+
+    expect(h.press("escape")).toBe(false);
+    expect(h.cancelled).toBe(1);
+    binding.dispose();
+  });
+
+  test("divergent draft via decorator notifies hooks and clears the widget", () => {
+    const h = harness("run unit tests");
+    const binding = installOmpPredictionComposer(h.ui, h.hooks);
+    binding.requestRender();
+    expect(h.renderWidget(80)).toEqual(["<accent> ↳ </accent><muted>run unit tests</muted><dim>  [Tab / →]</dim>", " "]);
+
+    h.type("unrelated");
+    expect(h.drafts).toEqual(["unrelated"]);
+    expect(h.renderWidget(80)).toBeUndefined();
+    expect(h.press("tab")).toBe(false);
+    binding.dispose();
+  });
+
+  test("dispose removes composer hooks and clears the widget once", () => {
+    const h = harness("extension suggestion");
+    const binding = installOmpPredictionComposer(h.ui, h.hooks);
+    binding.requestRender();
+    expect(h.keyHandlerCount).toBe(1);
+    expect(h.decoratorCount).toBe(1);
+
+    binding.dispose();
+    expect(h.keyHandlerCount).toBe(0);
+    expect(h.decoratorCount).toBe(0);
+    expect(h.renderWidget(80)).toBeUndefined();
+
+    const callsAfterDispose = h.setWidgetCalls;
     binding.requestRender();
     binding.dispose();
-    expect(h.renders).toBe(0);
-    expect(h.sets).toBe(2);
+    expect(h.setWidgetCalls).toBe(callsAfterDispose);
   });
 
-  test("does not clobber a later editor extension or its method replacements on disposal", () => {
-    const h = harness();
-    const binding = installPredictionEditor(h.ui, h.hooks);
-    const ours = h.ui.getEditorComponent()!;
-    const later: EditorFactory = (...args) => ours(...args);
-    h.ui.setEditorComponent(later);
-    const laterInput = () => { h.editor.text = "later"; };
-    h.editor.handleInput = laterInput;
+  test("returns a no-op binding when ui.composer is unavailable", () => {
+    const h = harness("extension suggestion");
+    const binding = installOmpPredictionComposer({ ...h.ui, composer: undefined }, h.hooks);
+    binding.requestRender();
     binding.dispose();
-    expect(h.ui.getEditorComponent()).toBe(later);
-    expect(h.editor.handleInput).toBe(laterInput);
-    expect(h.editor.predictions?.()).toEqual(["native suggestion"]);
-    h.editor.onPredictionAccepted?.(4);
-    expect(h.nativeAccepted).toEqual([4]);
-    expect(h.accepted).toBe(0);
-    expect(h.sets).toBe(2);
-  });
-
-  test("composes existing accessor-based prediction extensions and restores their descriptors", () => {
-    const editor = new FakeEditor();
-    let upstream: (() => readonly string[] | undefined) | undefined;
-    const get = () => () => upstream?.();
-    const set = (value: (() => readonly string[] | undefined) | undefined) => { upstream = value; };
-    Object.defineProperty(editor, "predictions", { configurable: true, get, set });
-    const h = harness(editor);
-    const binding = installPredictionEditor(h.ui, h.hooks);
-    h.choices = undefined;
-    expect(editor.predictions?.()).toEqual(["native suggestion"]);
-    h.choices = ["extension suggestion"];
-    expect(editor.predictions?.()).toEqual(["extension suggestion"]);
-    const ours = h.ui.getEditorComponent()!;
-    h.ui.setEditorComponent((...args) => ours(...args));
-    // Another extension's independently replaced descriptor is not ours to undo.
-    const accepted = () => {};
-    Object.defineProperty(editor, "onPredictionAccepted", { configurable: true, value: accepted });
-    binding.dispose();
-    expect(Object.getOwnPropertyDescriptor(editor, "predictions")?.get).toBe(get);
-    expect(editor.predictions?.()).toEqual(["native suggestion"]);
-    expect(editor.onPredictionAccepted).toBe(accepted);
+    expect(h.setWidgetCalls).toBe(0);
   });
 });
