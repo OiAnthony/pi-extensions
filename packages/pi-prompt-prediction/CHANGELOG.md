@@ -1,5 +1,11 @@
 # @oipsanthony/pi-prompt-prediction
 
+## 0.3.1
+
+### Patch Changes
+
+- 09d7cf6: Adapt OMP 19.x composer predictions to `ctx.ui.composer` and an above-editor widget (including pending status), and lazy-load the Pi editor wrapper so OMP does not require `@earendil-works/pi-tui`.
+
 ## 0.3.0
 
 ### Minor Changes

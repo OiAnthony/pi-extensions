@@ -1,5 +1,11 @@
 # @oipsanthony/pi-tps
 
+## 0.2.1
+
+### Patch Changes
+
+- 09d7cf6: Remove the `@earendil-works/pi-tui` runtime dependency by rendering muted metric lines directly.
+
 ## 0.2.0
 
 ### Minor Changes
