@@ -284,10 +284,18 @@ describe("extension lifecycle", () => {
     };
     const details = { version: 1, line: "2.0s · 50.0 tok/s" };
 
-    harness.messageRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ details }, {}, theme);
-    harness.entryRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ data: details }, {}, theme);
+    const messageView = harness.messageRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ details }, {}, theme) as
+      | { render(width: number): string[]; invalidate(): void }
+      | undefined;
+    const entryView = harness.entryRenderers.get(PROMPT_DISPLAY_MESSAGE_TYPE)?.({ data: details }, {}, theme) as
+      | { render(width: number): string[]; invalidate(): void }
+      | undefined;
 
     assert.deepEqual(colors, ["muted", "muted"]);
+    assert.deepEqual(messageView?.render(80), [" 2.0s · 50.0 tok/s"]);
+    assert.deepEqual(entryView?.render(80), [" 2.0s · 50.0 tok/s"]);
+    assert.equal(typeof messageView?.invalidate, "function");
+    assert.equal(typeof entryView?.invalidate, "function");
   });
 
   test("falls back to a notification when the host lacks entry renderers", async () => {
