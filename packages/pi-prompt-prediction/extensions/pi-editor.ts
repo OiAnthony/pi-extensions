@@ -1,6 +1,6 @@
-import type { CustomEditor, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
-import type { PredictionEditorHooks } from "./editor.js";
+import type { PiEditorUI, PredictionEditorBinding, PredictionEditorHooks } from "./editor.js";
 
 type EditorFactory = NonNullable<Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0]>;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -86,5 +86,92 @@ export function installPiPredictions(
       if (inputDescriptor) Object.defineProperty(editor, "handleInput", inputDescriptor);
       else Reflect.deleteProperty(editor, "handleInput");
     }
+  };
+}
+
+interface OnChangeHost {
+  onChange?: (text: string) => void;
+}
+
+export function installPiPredictionEditor(
+  ui: PiEditorUI,
+  hooks: PredictionEditorHooks,
+): PredictionEditorBinding {
+  const previousFactory = ui.getEditorComponent();
+  const cleanups = new Map<object, () => void>();
+  let render: (() => void) | undefined;
+  let disposed = false;
+
+  const factory: EditorFactory = (tui, theme, keybindings) => {
+    const editor = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+    if (disposed) return editor;
+    render = () => tui.requestRender();
+    if (cleanups.has(editor)) return editor;
+
+    const host = editor as typeof editor & OnChangeHost;
+    const restore: (() => void)[] = [];
+
+    restore.push(installPiPredictions(editor, () => ui.theme, keybindings, hooks));
+
+    let lastText = editor.getText();
+    const descriptor = Object.getOwnPropertyDescriptor(host, "onChange");
+    let value = host.onChange;
+    const wrapped = (text: string) => {
+      value?.call(host, text);
+      const currentText = editor.getText();
+      if (!disposed && currentText !== lastText) {
+        lastText = currentText;
+        hooks.draftChanged(currentText);
+      }
+    };
+    const get = () => wrapped;
+    Object.defineProperty(host, "onChange", {
+      configurable: true,
+      enumerable: descriptor?.enumerable ?? true,
+      get,
+      set(next: OnChangeHost["onChange"]) {
+        if (descriptor?.set) {
+          descriptor.set.call(host, next);
+          value = descriptor.get ? descriptor.get.call(host) : next;
+        } else {
+          value = next;
+        }
+      },
+    });
+    restore.push(() => {
+      if (Object.getOwnPropertyDescriptor(host, "onChange")?.get !== get) return;
+      if (descriptor && !("value" in descriptor)) {
+        Object.defineProperty(host, "onChange", descriptor);
+      } else {
+        Object.defineProperty(host, "onChange", {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          ...descriptor,
+          value,
+        });
+      }
+    });
+
+    cleanups.set(editor, () => {
+      for (const cleanup of restore.reverse()) cleanup();
+    });
+    return editor;
+  };
+
+  ui.setEditorComponent(factory);
+  return {
+    requestRender() {
+      if (!disposed) render?.();
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const cleanup of cleanups.values()) cleanup();
+      cleanups.clear();
+      render = undefined;
+      // Another extension may have replaced or composed our factory meanwhile.
+      if (ui.getEditorComponent() === factory) ui.setEditorComponent(previousFactory);
+    },
   };
 }

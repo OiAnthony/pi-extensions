@@ -5,7 +5,6 @@
  */
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import {
   PROMPT_DISPLAY_MESSAGE_TYPE,
   PROMPT_ENTRY_TYPE,
@@ -70,6 +69,14 @@ function isFirstContentDelta(event: AssistantMessageEvent): boolean {
     && event.delta.length > 0;
 }
 
+function renderMutedLine(line: string, theme: { fg(color: "muted", text: string): string }) {
+  const rendered = ` ${theme.fg("muted", line)}`;
+  return {
+    render: () => [rendered],
+    invalidate: () => {},
+  };
+}
+
 export default function register(pi: ExtensionAPI, dependencies: RuntimeDependencies = {}): void {
   const clock = dependencies.clock ?? defaultClock();
   let promptCounter = 0;
@@ -79,14 +86,14 @@ export default function register(pi: ExtensionAPI, dependencies: RuntimeDependen
 
   pi.registerMessageRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (message, _options, theme) => {
     if (!isPromptDisplayData(message.details)) return undefined;
-    return new Text(theme.fg("muted", message.details.line), 1, 0);
+    return renderMutedLine(message.details.line, theme);
   });
 
   const supportsEntryRenderer = typeof pi.registerEntryRenderer === "function";
   if (supportsEntryRenderer) {
     pi.registerEntryRenderer(PROMPT_DISPLAY_MESSAGE_TYPE, (entry, _options, theme) => {
       if (!isPromptDisplayData(entry.data)) return undefined;
-      return new Text(theme.fg("muted", entry.data.line), 1, 0);
+      return renderMutedLine(entry.data.line, theme);
     });
   }
 

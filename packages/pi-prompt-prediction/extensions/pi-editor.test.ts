@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
-import { installPredictionEditor, type PredictionEditorHooks } from "./editor.js";
+import type { PiEditorUI, PredictionEditorHooks } from "./editor.js";
+import { installPiPredictionEditor } from "./pi-editor.js";
 
-type EditorUI = Parameters<typeof installPredictionEditor>[0];
+type EditorUI = PiEditorUI;
 type Factory = NonNullable<Parameters<EditorUI["setEditorComponent"]>[0]>;
 
 function harness(choice = "加一个中文回归测试 👩‍💻") {
@@ -45,7 +46,7 @@ function harness(choice = "加一个中文回归测试 👩‍💻") {
   };
   const originalRender = editor.render;
   const originalInput = editor.handleInput;
-  const binding = installPredictionEditor(ui, hooks, "pi");
+  const binding = installPiPredictionEditor(ui, hooks);
   return {
     editor, ui, binding, drafts, keybindings, previous, originalRender, originalInput,
     get accepted() { return accepted; },
